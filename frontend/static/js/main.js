@@ -1,11 +1,12 @@
-// Application Main Coordinator matching unonomercy.in flow
+// Application Main Coordinator matching unonomercy.in flow with robust room & start handling
 
 document.addEventListener('DOMContentLoaded', () => {
     let currentUser = null;
     let currentRoom = null;
-    let myPlayerId = null;
+    let myPlayerId = sessionStorage.getItem('uno_my_player_id') || null;
     let ws = null;
     let gameRenderer = null;
+    let isConnecting = false;
 
     // View Sections
     const lobbyView = document.getElementById('lobbyView');
@@ -15,7 +16,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Modals
     const rulebookModal = document.getElementById('rulebookModal');
     const victoryModal = document.getElementById('victoryModal');
-    const shareModal = document.getElementById('shareModal');
     const chatDrawer = document.getElementById('chatDrawer');
 
     // Header buttons
@@ -62,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const rematchBtn = document.getElementById('rematchBtn');
     const returnLobbyBtn = document.getElementById('returnLobbyBtn');
 
-    // Simulated online players counter with realistic fluctuation
+    // Online players counter fluctuation
     function updateOnlineCount() {
         if (onlinePlayerCountEl) {
             const base = 1420;
@@ -112,6 +112,13 @@ document.addEventListener('DOMContentLoaded', () => {
     sendChatBtn.onclick = sendChat;
     chatInput.onkeydown = (e) => { if (e.key === 'Enter') sendChat(); };
 
+    // Auto-fill room code from URL parameters (e.g. ?room=XYZ123)
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomParam = urlParams.get('room') || urlParams.get('join');
+    if (roomParam && joinRoomCodeInput) {
+        joinRoomCodeInput.value = roomParam.trim().toUpperCase();
+    }
+
     // ---------------- 1. SOLO MODE (PLAY WITH BOTS) ---------------- //
     soloPlayBtn.addEventListener('click', async () => {
         const name = soloPlayerName.value.trim() || 'Player';
@@ -125,6 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             myPlayerId = res.host_id;
+            sessionStorage.setItem('uno_my_player_id', myPlayerId);
             currentRoom = res.room;
             currentUser = { name: name, avatar: 'avatar1' };
 
@@ -147,6 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const res = await window.API.createRoom(name, 'avatar1', 6);
             myPlayerId = res.host_id;
+            sessionStorage.setItem('uno_my_player_id', myPlayerId);
             currentRoom = res.room;
             currentUser = { name: name, avatar: 'avatar1' };
 
@@ -156,14 +165,14 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('Failed to create room: ' + err.message);
         } finally {
             createFriendsRoomBtn.disabled = false;
-            createFriendsRoomBtn.textContent = '👥 Create Room';
+            createFriendsRoomBtn.textContent = '👥 Create';
         }
     });
 
     joinFriendsRoomBtn.addEventListener('click', async () => {
         const code = joinRoomCodeInput.value.trim().toUpperCase();
         const name = friendsPlayerName.value.trim() || 'Player';
-        if (!code || code.length < 4) {
+        if (!code || code.length < 3) {
             alert('Please enter a valid room code.');
             return;
         }
@@ -174,6 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const res = await window.API.joinRoom(code, name, 'avatar2');
             myPlayerId = res.player_id;
+            sessionStorage.setItem('uno_my_player_id', myPlayerId);
             currentRoom = res.room;
             currentUser = { name: name, avatar: 'avatar2' };
 
@@ -183,13 +193,13 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('Failed to join room: ' + err.message);
         } finally {
             joinFriendsRoomBtn.disabled = false;
-            joinFriendsRoomBtn.textContent = 'Join Room';
+            joinFriendsRoomBtn.textContent = 'Join';
         }
     });
 
     // ---------------- 3. QUICK MATCHMAKING ---------------- //
     mmSearchBtn.addEventListener('click', async () => {
-        const name = mmPlayerName.value.trim() || 'Player';
+        const name = mmPlayerName.value.trim() || 'Challenger';
         mmSearchBtn.disabled = true;
         mmSearchBtn.textContent = 'Searching...';
 
@@ -200,12 +210,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (available) {
                 const joinRes = await window.API.joinRoom(available.code, name, 'avatar3');
                 myPlayerId = joinRes.player_id;
+                sessionStorage.setItem('uno_my_player_id', myPlayerId);
                 currentRoom = joinRes.room;
                 connectWebSocket(available.code, myPlayerId);
                 showWaitingRoom(joinRes.room);
             } else {
                 const createRes = await window.API.createRoom(name, 'avatar3', 4);
                 myPlayerId = createRes.host_id;
+                sessionStorage.setItem('uno_my_player_id', myPlayerId);
                 currentRoom = createRes.room;
                 connectWebSocket(createRes.room_code, myPlayerId);
                 showWaitingRoom(createRes.room);
@@ -218,7 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ---------------- WAITING ROOM CONTROLS ---------------- //
+    // ---------------- WAITING ROOM UI & CONTROLS ---------------- //
     function showWaitingRoom(room) {
         currentRoom = room;
         waitingRoomCode.textContent = room.code;
@@ -230,18 +242,19 @@ document.addEventListener('DOMContentLoaded', () => {
         waitingSlotsGrid.innerHTML = '';
         waitingPlayerCount.textContent = `${room.players.length}/${room.max_players}`;
         const isHost = (myPlayerId === room.host_id);
+        const canStart = (room.players.length >= 2);
 
         for (let i = 0; i < room.max_players; i++) {
             const player = room.players[i];
             const slot = document.createElement('div');
 
             if (player) {
-                slot.className = `player-slot-card occupied ${player.is_ready ? 'is-ready' : ''}`;
+                slot.className = 'player-slot-card occupied is-ready';
                 slot.innerHTML = `
                     <div class="slot-avatar">${player.is_ai ? '🤖' : getAvatarEmoji(player.avatar)}</div>
                     <div class="slot-name">${escapeHtml(player.name)}</div>
-                    <span class="slot-badge ${player.is_host ? 'host' : (player.is_ai ? 'bot' : (player.is_ready ? 'ready' : 'waiting'))}">
-                        ${player.is_host ? '👑 Host' : (player.is_ai ? '🤖 AI Bot' : (player.is_ready ? '✅ Ready' : '⏳ Waiting'))}
+                    <span class="slot-badge ${player.is_host ? 'host' : (player.is_ai ? 'bot' : 'ready')}">
+                        ${player.is_host ? '👑 Host' : (player.is_ai ? '🤖 AI Bot' : '✅ Ready')}
                     </span>
                 `;
 
@@ -254,9 +267,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     kickBtn.style.border = 'none';
                     kickBtn.style.color = '#ff1a4b';
                     kickBtn.style.cursor = 'pointer';
-                    kickBtn.style.fontSize = '1rem';
+                    kickBtn.style.fontSize = '1.1rem';
                     kickBtn.textContent = '✕';
-                    kickBtn.title = 'Remove';
+                    kickBtn.title = 'Remove Player';
                     kickBtn.onclick = () => {
                         if (player.is_ai) {
                             ws.send(JSON.stringify({ type: 'removeAI', aiId: player.id }));
@@ -276,25 +289,30 @@ document.addEventListener('DOMContentLoaded', () => {
             waitingSlotsGrid.appendChild(slot);
         }
 
-        // Host controls
+        // Host Controls
         if (isHost) {
             startGameBtn.style.display = 'block';
             addAiBtn.style.display = 'block';
             removeAiBtn.style.display = 'block';
             toggleReadyBtn.style.display = 'none';
 
-            const canStart = (room.players.length >= 2 && room.players.every(p => p.is_ready));
-            startGameBtn.disabled = !canStart;
+            if (canStart) {
+                startGameBtn.textContent = `🔥 Start Match (${room.players.length} Players)`;
+                startGameBtn.style.opacity = '1';
+                startGameBtn.style.cursor = 'pointer';
+                startGameBtn.style.boxShadow = '0 0 20px rgba(255, 0, 55, 0.7)';
+            } else {
+                startGameBtn.textContent = 'Waiting for Players (Need 2+)...';
+                startGameBtn.style.opacity = '0.7';
+                startGameBtn.style.cursor = 'pointer';
+                startGameBtn.style.boxShadow = 'none';
+            }
         } else {
             startGameBtn.style.display = 'none';
             addAiBtn.style.display = 'none';
             removeAiBtn.style.display = 'none';
             toggleReadyBtn.style.display = 'block';
-
-            const me = room.players.find(p => p.id === myPlayerId);
-            if (me) {
-                toggleReadyBtn.textContent = me.is_ready ? '❌ Unready' : '✅ Ready Up';
-            }
+            toggleReadyBtn.textContent = '✅ You are Ready';
         }
     }
 
@@ -310,35 +328,60 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    toggleReadyBtn.onclick = () => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ready' }));
-        }
-    };
+    // Robust Start Game implementation: calls both WebSocket and REST fallback
+    startGameBtn.onclick = async () => {
+        if (!currentRoom) return;
 
-    startGameBtn.onclick = () => {
+        if (currentRoom.players.length < 2) {
+            alert("⚠️ Need at least 2 players to start! Click '+ Add Bot' to add an AI opponent or share the code with a friend.");
+            return;
+        }
+
+        startGameBtn.disabled = true;
+        startGameBtn.textContent = 'Starting Game...';
+
+        // 1. Send via WebSocket
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'startGame' }));
+        }
+
+        // 2. Call REST start endpoint as guarantee
+        try {
+            await window.API.request(`/api/rooms/${currentRoom.code}/start`, {
+                method: 'POST',
+                body: { player_id: myPlayerId }
+            });
+        } catch (err) {
+            console.log("REST start response:", err.message);
+        } finally {
+            startGameBtn.disabled = false;
         }
     };
 
     shareRoomBtn.onclick = () => {
         if (currentRoom) {
-            navigator.clipboard.writeText(currentRoom.code);
-            shareRoomBtn.textContent = '✅ Copied!';
-            setTimeout(() => { shareRoomBtn.textContent = '📋 Share Code'; }, 1500);
+            const inviteUrl = `${window.location.origin}/?room=${currentRoom.code}`;
+            navigator.clipboard.writeText(inviteUrl);
+            shareRoomBtn.textContent = '✅ Link Copied!';
+            setTimeout(() => { shareRoomBtn.textContent = '📋 Share Code'; }, 1800);
         }
     };
 
     leaveLobbyBtn.onclick = () => {
         if (ws) ws.close();
         currentRoom = null;
+        sessionStorage.removeItem('uno_my_player_id');
         switchView('lobby');
     };
 
-    // ---------------- WEBSOCKET CONNECTION ---------------- //
+    // ---------------- WEBSOCKET CONNECTION & AUTO-RECONNECT ---------------- //
     function connectWebSocket(roomCode, playerId) {
-        if (ws) ws.close();
+        if (isConnecting) return;
+        isConnecting = true;
+
+        if (ws) {
+            try { ws.close(); } catch (e) {}
+        }
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/${roomCode}/${playerId}`;
@@ -350,13 +393,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         gameRenderer.setWebSocket(ws, playerId);
 
+        ws.onopen = () => {
+            isConnecting = false;
+            console.log('Connected to UNO No Mercy WebSocket');
+        };
+
         ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
                 handleWsEvent(data);
             } catch (err) {
-                console.error('WS Error:', err);
+                console.error('WS parse error:', err);
             }
+        };
+
+        ws.onclose = () => {
+            isConnecting = false;
+            console.log('WebSocket closed. Reconnecting in 1.5s...');
+            // Auto reconnect if room still active
+            if (currentRoom && myPlayerId && document.getElementById('waitingView').classList.contains('active')) {
+                setTimeout(() => connectWebSocket(currentRoom.code, myPlayerId), 1500);
+            }
+        };
+
+        ws.onerror = (err) => {
+            isConnecting = false;
+            console.warn('WebSocket error:', err);
         };
     }
 
@@ -366,6 +428,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentRoom = data.room;
                 if (data.room.status === 'waiting') {
                     renderWaitingSlots(data.room);
+                } else if (data.room.status === 'in_progress') {
+                    switchView('game');
                 }
                 break;
 
@@ -425,6 +489,7 @@ document.addEventListener('DOMContentLoaded', () => {
         victoryModal.classList.remove('active');
         if (ws) ws.close();
         currentRoom = null;
+        sessionStorage.removeItem('uno_my_player_id');
         switchView('lobby');
     };
 

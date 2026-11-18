@@ -7,7 +7,7 @@ import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from backend.app.config import MIN_PLAYERS, MAX_PLAYERS
@@ -32,15 +32,12 @@ app.add_middleware(
 # ----------------- Helper for AI Automation ----------------- #
 
 async def handle_ai_turns_in_background(room, room_code: str):
-    """
-    Executes automated turns with realistic thinking delays when current player is an AI bot.
-    """
     while room.game and not room.game.game_over:
         curr = room.game.current_player
         if not curr.get("is_ai") or curr.get("is_eliminated"):
             break
 
-        await asyncio.sleep(0.75)  # Natural thinking pause
+        await asyncio.sleep(0.75)
 
         if not room.game or room.game.game_over:
             break
@@ -104,10 +101,11 @@ def history(db: Session = Depends(get_db)):
 
 @app.post("/api/rooms")
 async def create_room(request: CreateRoomRequest):
+    host_name = request.host_name.strip() if request.host_name else "Host"
     host_id = f"player_{uuid.uuid4().hex[:8]}"
     room = await room_manager.create_room(
         host_id=host_id,
-        host_name=request.host_name.strip(),
+        host_name=host_name,
         avatar=request.avatar,
         max_players=request.max_players,
         is_solo=False
@@ -121,10 +119,11 @@ async def create_room(request: CreateRoomRequest):
 
 @app.post("/api/rooms/solo")
 async def create_solo_room(request: CreateRoomRequest):
+    host_name = request.host_name.strip() if request.host_name else "Player"
     host_id = f"player_{uuid.uuid4().hex[:8]}"
     room = await room_manager.create_room(
         host_id=host_id,
-        host_name=request.host_name.strip(),
+        host_name=host_name,
         avatar=request.avatar,
         max_players=4,
         is_solo=True
@@ -147,27 +146,35 @@ async def list_rooms():
 
 @app.get("/api/rooms/{room_code}")
 async def get_room(room_code: str):
-    room = await room_manager.get_room(room_code)
+    code = room_code.strip().upper()
+    room = await room_manager.get_room(code)
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
     return {"room": room.to_dict()}
 
 @app.post("/api/rooms/{room_code}/join")
 async def join_room(room_code: str, request: JoinRoomRequest):
-    room = await room_manager.get_room(room_code)
+    code = room_code.strip().upper()
+    room = await room_manager.get_room(code)
     if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
+        raise HTTPException(status_code=404, detail=f"Room '{code}' not found")
 
+    player_name = request.player_name.strip() if request.player_name else "Player"
     player_id = f"player_{uuid.uuid4().hex[:8]}"
     result = room.add_player(
         player_id=player_id,
-        player_name=request.player_name.strip(),
+        player_name=player_name,
         avatar=request.avatar
     )
 
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result.get("error", "Could not join room"))
 
+    # Return actual joined/reconnected player info
+    actual_player = result.get("player", {})
+    actual_id = actual_player.get("id", player_id)
+
+    # Immediately broadcast updated room to all existing connected players
     await ws_manager.broadcast_to_room(room.code, {
         "type": "room_update",
         "room": room.to_dict()
@@ -175,9 +182,32 @@ async def join_room(room_code: str, request: JoinRoomRequest):
 
     return {
         "success": True,
-        "player_id": player_id,
+        "player_id": actual_id,
         "room": room.to_dict()
     }
+
+@app.post("/api/rooms/{room_code}/start")
+async def start_game_endpoint(room_code: str, payload: dict):
+    code = room_code.strip().upper()
+    player_id = payload.get("player_id")
+    room = await room_manager.get_room(code)
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    result = room.start_game(player_id)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not start game"))
+
+    await ws_manager.broadcast_to_room(code, {
+        "type": "game_started",
+        "room": room.to_dict()
+    })
+    await ws_manager.broadcast_game_state(room)
+
+    if room.game.current_player.get("is_ai"):
+        asyncio.create_task(handle_ai_turns_in_background(room, code))
+
+    return {"success": True}
 
 
 # ----------------- WebSocket Endpoint ----------------- #
@@ -185,7 +215,8 @@ async def join_room(room_code: str, request: JoinRoomRequest):
 @app.websocket("/ws/{room_code}/{player_id}")
 async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
     db = SessionLocal()
-    room_code = room_code.upper()
+    room_code = room_code.strip().upper()
+    player_id = player_id.strip()
     room = await room_manager.get_room(room_code)
 
     if not room:
@@ -202,7 +233,11 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
     await ws_manager.connect(room_code, player_id, websocket)
 
     try:
-        await ws_manager.send_to_player(room_code, player_id, {
+        # Mark player connected
+        player["connected"] = True
+
+        # Broadcast room state to everyone so all tabs reflect connection
+        await ws_manager.broadcast_to_room(room_code, {
             "type": "room_update",
             "room": room.to_dict()
         })
@@ -222,9 +257,9 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
 
             msg_type = data.get("type")
 
-            # 1. Ready Toggle
+            # 1. Ready
             if msg_type == "ready":
-                result = room.toggle_ready(player_id)
+                room.toggle_ready(player_id)
                 await ws_manager.broadcast_to_room(room_code, {
                     "type": "room_update",
                     "room": room.to_dict()
@@ -274,7 +309,6 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                     })
                     await ws_manager.broadcast_game_state(room)
 
-                    # Trigger bot turn if first player is AI
                     if room.game.current_player.get("is_ai"):
                         asyncio.create_task(handle_ai_turns_in_background(room, room_code))
 
@@ -332,7 +366,6 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                             "duration_seconds": duration
                         })
                     else:
-                        # If next turn is AI, run AI turns in background
                         if room.game.current_player.get("is_ai"):
                             asyncio.create_task(handle_ai_turns_in_background(room, room_code))
 
@@ -454,14 +487,14 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                     room.game = None
                     for p in room.players:
                         if not p["is_host"] and not p.get("is_ai"):
-                            p["is_ready"] = False
+                            p["is_ready"] = True
                     await ws_manager.broadcast_to_room(room_code, {
                         "type": "room_update",
                         "room": room.to_dict()
                     })
 
     except WebSocketDisconnect:
-        ws_manager.disconnect(room_code, player_id)
+        ws_manager.disconnect(room_code, player_id, websocket)
         player["connected"] = False
         await ws_manager.broadcast_to_room(room_code, {
             "type": "player_disconnected",
@@ -470,7 +503,7 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
         })
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        ws_manager.disconnect(room_code, player_id)
+        ws_manager.disconnect(room_code, player_id, websocket)
     finally:
         db.close()
 

@@ -10,7 +10,7 @@ BOT_NAMES = ["Bot Nova", "Bot Rex", "Bot Shadow", "Bot Luna", "Bot Blaze", "Bot 
 
 class Room:
     def __init__(self, code: str, host_id: str, host_name: str, avatar: str = "avatar1", max_players: int = 6, is_solo: bool = False):
-        self.code = code.upper()
+        self.code = code.strip().upper()
         self.host_id = host_id
         self.host_name = host_name
         self.max_players = max(MIN_PLAYERS, min(MAX_PLAYERS, max_players))
@@ -58,19 +58,22 @@ class Room:
         }
 
     def add_player(self, player_id: str, player_name: str, avatar: str = "avatar1", is_ai: bool = False) -> Dict[str, Any]:
-        if self.status != "waiting":
-            return {"success": False, "error": "Game is already in progress or completed."}
-
-        existing = next((p for p in self.players if p["id"] == player_id), None)
+        # Check if already joined (reconnection)
+        existing = next((p for p in self.players if p["id"] == player_id or (not is_ai and p["name"].lower() == player_name.lower())), None)
         if existing:
             existing["connected"] = True
             existing["name"] = player_name
             existing["avatar"] = avatar
-            return {"success": True, "reconnected": True}
+            existing["is_ready"] = True
+            return {"success": True, "reconnected": True, "player": existing}
+
+        if self.status != "waiting":
+            return {"success": False, "error": "Game is already in progress or completed."}
 
         if len(self.players) >= self.max_players:
             return {"success": False, "error": f"Room is full (max {self.max_players} players)."}
 
+        # Prevent duplicate names
         if any(p["name"].lower() == player_name.lower() for p in self.players):
             player_name = f"{player_name}_{secrets.randbelow(999)}"
 
@@ -79,7 +82,7 @@ class Room:
             "name": player_name,
             "avatar": avatar,
             "is_host": False,
-            "is_ready": is_ai,  # AI is ready immediately
+            "is_ready": True,  # Joined players are automatically ready to play
             "is_ai": is_ai,
             "connected": True
         }
@@ -102,7 +105,6 @@ class Room:
         if bot_id:
             idx = next((i for i, p in enumerate(self.players) if p["id"] == bot_id and p.get("is_ai")), None)
         else:
-            # remove last added bot
             idx = next((i for i in range(len(self.players)-1, -1, -1) if self.players[i].get("is_ai")), None)
 
         if idx is None:
@@ -126,7 +128,6 @@ class Room:
                 self.game._eliminate_player(g_player, reason="Abandoned Game")
 
         if leaving_player["is_host"] and self.players:
-            # Transfer host to next human player if possible
             next_human = next((p for p in self.players if not p.get("is_ai")), self.players[0])
             next_human["is_host"] = True
             next_human["is_ready"] = True
@@ -141,18 +142,12 @@ class Room:
         if not player:
             return {"success": False, "error": "Player not found."}
 
-        if player["is_host"] or player.get("is_ai"):
-            player["is_ready"] = True
-            return {"success": True, "is_ready": True}
-
-        player["is_ready"] = not player["is_ready"]
-        return {"success": True, "is_ready": player["is_ready"]}
+        player["is_ready"] = True
+        return {"success": True, "is_ready": True}
 
     def can_start(self) -> Tuple[bool, str]:
         if len(self.players) < MIN_PLAYERS:
-            return False, f"Need at least {MIN_PLAYERS} players to start."
-        if not all(p["is_ready"] for p in self.players):
-            return False, "Not all players are ready."
+            return False, f"Need at least {MIN_PLAYERS} players to start. Click '+ Add Bot' or invite a friend!"
         return True, "Ready to start."
 
     def start_game(self, requesting_player_id: str) -> Dict[str, Any]:
@@ -207,7 +202,6 @@ class Room:
 class RoomManager:
     def __init__(self):
         self.rooms: Dict[str, Room] = {}
-        self.matchmaking_queue: List[Dict[str, Any]] = []
 
     def _generate_unique_code(self) -> str:
         chars = string.ascii_uppercase + string.digits
@@ -226,11 +220,11 @@ class RoomManager:
         return room
 
     async def get_room(self, room_code: str) -> Optional[Room]:
-        code = room_code.upper()
+        code = room_code.strip().upper()
         return self.rooms.get(code)
 
     async def delete_room(self, room_code: str):
-        code = room_code.upper()
+        code = room_code.strip().upper()
         if code in self.rooms:
             del self.rooms[code]
         await state_store.delete_room(code)
