@@ -45,6 +45,17 @@ class UnoGameRenderer {
             });
         }
 
+        // Draw Action Button in Hand Bar
+        const drawBtn = document.getElementById('drawCardActionBtn');
+        if (drawBtn) {
+            drawBtn.addEventListener('click', () => {
+                if (this.gameState && this.gameState.can_draw) {
+                    this.sendAction({ type: 'draw' });
+                    window.sounds.drawCard();
+                }
+            });
+        }
+
         // UNO Call Button
         const unoBtn = document.getElementById('unoCallBtn');
         if (unoBtn) {
@@ -62,13 +73,23 @@ class UnoGameRenderer {
                 const colorCode = e.currentTarget.getAttribute('data-color');
                 const modal = document.getElementById('colorPickerModal');
                 const actionType = modal.getAttribute('data-action') || 'color';
+                const cardId = modal.getAttribute('data-card-id');
                 modal.classList.remove('active');
 
-                this.sendAction({
-                    type: 'resolve_action',
-                    action: actionType,
-                    color: colorCode
-                });
+                if (cardId && cardId !== 'null' && cardId !== 'undefined' && actionType === 'color') {
+                    this.sendAction({
+                        type: 'play_card',
+                        card_id: cardId,
+                        color: colorCode
+                    });
+                } else {
+                    this.sendAction({
+                        type: 'resolve_action',
+                        action: actionType,
+                        color: colorCode
+                    });
+                }
+                modal.removeAttribute('data-card-id');
                 window.sounds.playCard();
             });
         });
@@ -230,6 +251,25 @@ class UnoGameRenderer {
             unoBtn.disabled = myHand.length > 2;
         }
 
+        const drawBtn = document.getElementById('drawCardActionBtn');
+        if (drawBtn) {
+            if (this.gameState && this.gameState.can_draw) {
+                drawBtn.disabled = false;
+                drawBtn.classList.add('can-draw');
+                if (this.gameState.pending_penalty > 0) {
+                    drawBtn.innerHTML = `⚠️ DRAW +${this.gameState.pending_penalty} (PENALTY)`;
+                    drawBtn.classList.add('penalty');
+                } else {
+                    drawBtn.innerHTML = `📥 DRAW CARD`;
+                    drawBtn.classList.remove('penalty');
+                }
+            } else {
+                drawBtn.disabled = true;
+                drawBtn.classList.remove('can-draw', 'penalty');
+                drawBtn.innerHTML = `📥 DRAW CARD`;
+            }
+        }
+
         myHand.forEach(card => {
             const wrapper = document.createElement('div');
             const isPlayable = validIds.has(card.id);
@@ -295,11 +335,19 @@ class UnoGameRenderer {
             `;
             btn.onclick = () => {
                 modal.classList.remove('active');
-                this.sendAction({
-                    type: 'play_card',
-                    card_id: cardId,
-                    target_player_id: p.id
-                });
+                if (this.gameState && this.gameState.pending_action === 'target') {
+                    this.sendAction({
+                        type: 'resolve_action',
+                        action: 'target',
+                        target_player_id: p.id
+                    });
+                } else {
+                    this.sendAction({
+                        type: 'play_card',
+                        card_id: cardId,
+                        target_player_id: p.id
+                    });
+                }
                 window.sounds.playCard();
             };
             list.appendChild(btn);

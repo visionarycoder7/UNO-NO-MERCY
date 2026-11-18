@@ -49,6 +49,18 @@ const API = {
         });
     },
 
+    async addBot(code) {
+        return this.request(`/api/rooms/${code}/bot`, {
+            method: 'POST'
+        });
+    },
+
+    async removeBot(code) {
+        return this.request(`/api/rooms/${code}/bot`, {
+            method: 'DELETE'
+        });
+    },
+
     async getLeaderboard() {
         return this.request('/api/leaderboard');
     },

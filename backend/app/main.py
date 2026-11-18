@@ -32,50 +32,56 @@ app.add_middleware(
 # ----------------- Helper for AI Automation ----------------- #
 
 async def handle_ai_turns_in_background(room, room_code: str):
-    while room.game and not room.game.game_over:
-        curr = room.game.current_player
-        if not curr.get("is_ai") or curr.get("is_eliminated"):
-            break
-
-        await asyncio.sleep(0.75)
-
-        if not room.game or room.game.game_over:
-            break
-
-        res = room.game.execute_bot_turn_if_needed()
-        if res:
-            await ws_manager.broadcast_game_state(room)
-
-            if room.game.game_over:
-                room.status = "finished"
-                duration = int(time.time() - room.game.start_time)
-                db = SessionLocal()
-                try:
-                    record_match_result(
-                        db=db,
-                        room_code=room.code,
-                        winner_name=room.game.winner["name"],
-                        total_players=len(room.players),
-                        win_reason=room.game.win_reason,
-                        duration_seconds=duration,
-                        player_stats=[{
-                            "name": p["name"],
-                            "knockouts_caused": p["knockouts_caused"],
-                            "is_eliminated": p["is_eliminated"]
-                        } for p in room.game.players]
-                    )
-                finally:
-                    db.close()
-
-                await ws_manager.broadcast_to_room(room_code, {
-                    "type": "game_over",
-                    "winner": room.game.winner,
-                    "win_reason": room.game.win_reason,
-                    "duration_seconds": duration
-                })
+    if getattr(room, "_ai_task_running", False):
+        return
+    room._ai_task_running = True
+    try:
+        while room.game and not room.game.game_over:
+            curr = room.game.current_player
+            if not curr.get("is_ai") or curr.get("is_eliminated"):
                 break
-        else:
-            break
+
+            await asyncio.sleep(0.75)
+
+            if not room.game or room.game.game_over:
+                break
+
+            res = room.game.execute_bot_turn_if_needed()
+            if res:
+                await ws_manager.broadcast_game_state(room)
+
+                if room.game.game_over:
+                    room.status = "finished"
+                    duration = int(time.time() - room.game.start_time)
+                    db = SessionLocal()
+                    try:
+                        record_match_result(
+                            db=db,
+                            room_code=room.code,
+                            winner_name=room.game.winner["name"],
+                            total_players=len(room.players),
+                            win_reason=room.game.win_reason,
+                            duration_seconds=duration,
+                            player_stats=[{
+                                "name": p["name"],
+                                "knockouts_caused": p["knockouts_caused"],
+                                "is_eliminated": p["is_eliminated"]
+                            } for p in room.game.players]
+                        )
+                    finally:
+                        db.close()
+
+                    await ws_manager.broadcast_to_room(room_code, {
+                        "type": "game_over",
+                        "winner": room.game.winner,
+                        "win_reason": room.game.win_reason,
+                        "duration_seconds": duration
+                    })
+                    break
+            else:
+                break
+    finally:
+        room._ai_task_running = False
 
 
 # ----------------- REST Endpoints ----------------- #
@@ -185,6 +191,36 @@ async def join_room(room_code: str, request: JoinRoomRequest):
         "player_id": actual_id,
         "room": room.to_dict()
     }
+
+@app.post("/api/rooms/{room_code}/bot")
+async def add_bot_endpoint(room_code: str):
+    code = room_code.strip().upper()
+    room = await room_manager.get_room(code)
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    result = room.add_ai_bot()
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not add bot"))
+    await ws_manager.broadcast_to_room(code, {
+        "type": "room_update",
+        "room": room.to_dict()
+    })
+    return {"success": True, "room": room.to_dict()}
+
+@app.delete("/api/rooms/{room_code}/bot")
+async def remove_bot_endpoint(room_code: str):
+    code = room_code.strip().upper()
+    room = await room_manager.get_room(code)
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    result = room.remove_ai_bot()
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not remove bot"))
+    await ws_manager.broadcast_to_room(code, {
+        "type": "room_update",
+        "room": room.to_dict()
+    })
+    return {"success": True, "room": room.to_dict()}
 
 @app.post("/api/rooms/{room_code}/start")
 async def start_game_endpoint(room_code: str, payload: dict):
@@ -334,6 +370,7 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                         "message": result.get("error", "Invalid move")
                     })
                 elif result.get("needs_action"):
+                    await ws_manager.broadcast_game_state(room)
                     await ws_manager.send_to_player(room_code, player_id, {
                         "type": "action_required",
                         "action": result["needs_action"],

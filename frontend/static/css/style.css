@@ -680,6 +680,44 @@ body {
 .uno-btn:hover { transform: scale(1.08); }
 .uno-btn.pulse { animation: unoPulse 0.8s infinite alternate; }
 
+.draw-action-btn {
+    background: #2a3a30;
+    color: #888;
+    font-family: var(--font-heading);
+    font-size: 0.95rem;
+    font-weight: 800;
+    letter-spacing: 1px;
+    padding: 6px 20px;
+    border: 2px solid transparent;
+    border-radius: 20px;
+    cursor: not-allowed;
+    transition: all 0.2s ease;
+    opacity: 0.45;
+}
+.draw-action-btn.can-draw {
+    background: #ffd23f;
+    color: #111;
+    opacity: 1;
+    cursor: pointer;
+    box-shadow: 0 0 16px rgba(255, 210, 63, 0.6);
+    border-color: #fff;
+    animation: drawBtnPulse 1.1s infinite alternate;
+}
+.draw-action-btn.penalty {
+    background: #ff1a4b !important;
+    color: #fff !important;
+    box-shadow: 0 0 22px rgba(255, 26, 75, 0.9) !important;
+    animation: drawPenaltyPulse 0.7s infinite alternate !important;
+}
+@keyframes drawBtnPulse {
+    from { transform: scale(1); }
+    to { transform: scale(1.06); box-shadow: 0 0 22px rgba(255, 210, 63, 0.9); }
+}
+@keyframes drawPenaltyPulse {
+    from { transform: scale(1); }
+    to { transform: scale(1.08); box-shadow: 0 0 28px rgba(255, 26, 75, 1); }
+}
+
 @keyframes unoPulse {
     from { transform: scale(1); box-shadow: 0 0 10px rgba(255, 208, 0, 0.6); }
     to { transform: scale(1.12); box-shadow: 0 0 25px rgba(255, 208, 0, 1); }

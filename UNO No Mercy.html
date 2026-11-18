@@ -32,6 +32,11 @@ button.sec{background:#33473b;color:#fff}button:disabled{opacity:.4;cursor:not-a
 .row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
 input[type=text]{font:inherit;padding:8px;border-radius:8px;border:1px solid #4a6155;background:#0e1a14;color:#fff;width:150px}
 details{margin-top:16px;background:#0005;padding:10px 14px;border-radius:10px;line-height:1.5}
+.flying-card{position:fixed;z-index:9999;pointer-events:none;margin:0;box-shadow:0 14px 28px rgba(0,0,0,0.6),0 0 16px rgba(255,255,255,0.3);will-change:transform,opacity}
+@keyframes deckImpact{0%{transform:scale(1)}35%{transform:scale(1.16) rotate(calc(var(--rot,0deg) + 3deg))}70%{transform:scale(0.97) rotate(calc(var(--rot,0deg) - 1deg))}100%{transform:scale(1) rotate(var(--rot,0deg))}}
+.pile-impact{animation:deckImpact 0.28s cubic-bezier(0.175,0.885,0.32,1.275)}
+@keyframes oppThrow{0%{transform:scale(1)}40%{transform:scale(1.08) translateY(-4px);border-color:#ffd23f}100%{transform:scale(1)}}
+.opp-play{animation:oppThrow 0.3s ease-out}
 </style></head><body><div id="app"></div>
 <script>
 const C={R:'#d72600',Y:'#d99a00',G:'#2a9d48',B:'#0b6fd1',W:'#222'};
@@ -74,7 +79,74 @@ function mercy(){
  const a=act();if(a.length===1&&G.win===null)G.win=a[0]}
 function end(skip=0,from=G.cur){let c=from;for(let k=0;k<=skip;k++)c=nxt(c);G.cur=c;G.revealed=false;render();tick()}
 
+let isAnimating=false;
+function playCardSound(type='throw'){
+ try{
+  const ctx=window._aCtx||(window._aCtx=new (window.AudioContext||window.webkitAudioContext)());
+  if(ctx.state==='suspended')ctx.resume();
+  const osc=ctx.createOscillator(),gain=ctx.createGain();
+  osc.connect(gain);gain.connect(ctx.destination);
+  if(type==='throw'){
+   osc.type='sine';osc.frequency.setValueAtTime(450,ctx.currentTime);
+   osc.frequency.exponentialRampToValueAtTime(160,ctx.currentTime+0.1);
+   gain.gain.setValueAtTime(0.18,ctx.currentTime);
+   gain.gain.exponentialRampToValueAtTime(0.01,ctx.currentTime+0.1);
+   osc.start();osc.stop(ctx.currentTime+0.1);
+  }else{
+   osc.type='triangle';osc.frequency.setValueAtTime(220,ctx.currentTime);
+   osc.frequency.exponentialRampToValueAtTime(60,ctx.currentTime+0.08);
+   gain.gain.setValueAtTime(0.28,ctx.currentTime);
+   gain.gain.exponentialRampToValueAtTime(0.01,ctx.currentTime+0.08);
+   osc.start();osc.stop(ctx.currentTime+0.08);
+  }
+ }catch(e){}
+}
+
+function animateCardThrow(i,card,done){
+ const toEl=$('#topCard')||$('.table .card:nth-child(2)');
+ let fromEl=$(`.hand .card[data-id="${card.id}"]`);
+ if(!fromEl||fromEl.offsetParent===null)fromEl=$(`.opp[data-seat="${i}"]`);
+ if(!fromEl||!toEl){done();return}
+ isAnimating=true;
+ const f=fromEl.getBoundingClientRect(),t=toEl.getBoundingClientRect();
+ if(fromEl.classList.contains('card'))fromEl.style.visibility='hidden';
+ else{fromEl.classList.remove('opp-play');void fromEl.offsetWidth;fromEl.classList.add('opp-play')}
+ const fly=document.createElement('div');
+ fly.className=`card ${card.color==='W'?'w':''} flying-card`;
+ fly.style.cssText=`position:fixed;left:${f.left}px;top:${f.top}px;width:${f.width||64}px;height:${f.height||96}px;--c:${C[card.color]};`;
+ fly.innerHTML=`<b>${face(card)}</b>${/^\d$/.test(card.type)?'':`<i>${NM[card.type]}</i>`}`;
+ document.body.appendChild(fly);
+ const dx=(t.left+t.width/2)-(f.left+f.width/2);
+ const dy=(t.top+t.height/2)-(f.top+f.height/2);
+ const rot=(Math.random()*28-14);
+ const midY=dy*0.4-(Math.abs(dx)>70?45:25);
+ const targetScale=t.width/(f.width||64);
+ playCardSound('throw');
+ const anim=fly.animate([
+  {transform:'translate(0,0) scale(1) rotate(0deg)',opacity:0.92},
+  {transform:`translate(${dx*0.45}px,${midY}px) scale(${Math.max(1.15,targetScale*0.92)}) rotate(${rot*0.6}deg)`,opacity:1,offset:0.45},
+  {transform:`translate(${dx}px,${dy}px) scale(${targetScale}) rotate(${rot}deg)`,opacity:1}
+ ],{duration:280,easing:'cubic-bezier(0.22,0.9,0.3,1)'});
+ anim.onfinish=()=>{
+  fly.remove();
+  isAnimating=false;
+  playCardSound('impact');
+  done();
+  const newTop=$('#topCard');
+  if(newTop){
+   newTop.style.setProperty('--rot',`${rot}deg`);
+   newTop.classList.remove('pile-impact');
+   void newTop.offsetWidth;
+   newTop.classList.add('pile-impact');
+  }
+ };
+}
+
 function play(i,card,chosen,tgt){
+ animateCardThrow(i,card,()=>execPlay(i,card,chosen,tgt));
+}
+
+function execPlay(i,card,chosen,tgt){
  const p=G.pl[i],t=card.type;
  p.hand=p.hand.filter(c=>c.id!==card.id);G.disc.push(card);G.top=card;
  if(card.color!=='W')G.color=card.color;else if(chosen)G.color=chosen;

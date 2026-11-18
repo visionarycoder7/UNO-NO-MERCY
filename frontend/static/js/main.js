@@ -316,15 +316,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    addAiBtn.onclick = () => {
+    addAiBtn.onclick = async () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'addAI' }));
         }
+        if (currentRoom) {
+            try {
+                const res = await window.API.addBot(currentRoom.code);
+                if (res && res.room) {
+                    currentRoom = res.room;
+                    renderWaitingSlots(res.room);
+                }
+            } catch (e) {}
+        }
     };
 
-    removeAiBtn.onclick = () => {
+    removeAiBtn.onclick = async () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'removeAI' }));
+        }
+        if (currentRoom) {
+            try {
+                const res = await window.API.removeBot(currentRoom.code);
+                if (res && res.room) {
+                    currentRoom = res.room;
+                    renderWaitingSlots(res.room);
+                }
+            } catch (e) {}
         }
     };
 
@@ -372,7 +390,71 @@ document.addEventListener('DOMContentLoaded', () => {
         currentRoom = null;
         sessionStorage.removeItem('uno_my_player_id');
         switchView('lobby');
+        loadOpenRooms();
     };
+
+    const leaveGameBtn = document.getElementById('leaveGameBtn');
+    if (leaveGameBtn) {
+        leaveGameBtn.onclick = () => {
+            if (confirm("Are you sure you want to leave the current match?")) {
+                if (ws) ws.close();
+                currentRoom = null;
+                sessionStorage.removeItem('uno_my_player_id');
+                switchView('lobby');
+                loadOpenRooms();
+            }
+        };
+    }
+
+    // ---------------- ACTIVE ROOMS BROWSER ---------------- //
+    async function loadOpenRooms() {
+        const listEl = document.getElementById('openRoomsList');
+        if (!listEl) return;
+        try {
+            const data = await window.API.listRooms();
+            const rooms = data.rooms || [];
+            if (rooms.length === 0) {
+                listEl.innerHTML = `<p style="color: var(--text-secondary); font-size: 0.95rem; grid-column: 1 / -1; padding: 8px 0;">No active public rooms waiting. Create one above to invite friends!</p>`;
+                return;
+            }
+            listEl.innerHTML = '';
+            rooms.forEach(r => {
+                const card = document.createElement('div');
+                card.style.cssText = "background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;";
+                card.innerHTML = `
+                    <div>
+                        <div style="font-weight: 800; font-family: var(--font-heading); font-size: 1.1rem; color: #ffd23f;">Room: ${r.code}</div>
+                        <div style="font-size: 0.85rem; color: #aaa;">Host: <strong>${escapeHtml(r.host_name)}</strong> · ${r.player_count}/${r.max_players} Players</div>
+                    </div>
+                    <button class="btn-primary" style="padding: 6px 14px; font-size: 0.85rem;" onclick="window.joinRoomByCode('${r.code}')">Join</button>
+                `;
+                listEl.appendChild(card);
+            });
+        } catch (e) {}
+    }
+
+    window.joinRoomByCode = (code) => {
+        if (joinRoomCodeInput) {
+            joinRoomCodeInput.value = code;
+        }
+        if (joinFriendsRoomBtn) {
+            joinFriendsRoomBtn.click();
+        }
+    };
+
+    const refreshRoomsBtn = document.getElementById('refreshRoomsBtn');
+    if (refreshRoomsBtn) {
+        refreshRoomsBtn.onclick = () => loadOpenRooms();
+    }
+
+    // Auto-refresh rooms on page load and every 5 seconds on lobby
+    loadOpenRooms();
+    setInterval(() => {
+        const lobbyEl = document.getElementById('lobbyView');
+        if (lobbyEl && lobbyEl.classList.contains('active')) {
+            loadOpenRooms();
+        }
+    }, 5000);
 
     // ---------------- WEBSOCKET CONNECTION & AUTO-RECONNECT ---------------- //
     function connectWebSocket(roomCode, playerId) {
@@ -453,6 +535,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
             case 'game_over':
                 showVictory(data.winner, data.win_reason);
+                break;
+
+            case 'action_required':
+                if (data.action === 'color') {
+                    gameRenderer.showColorPickerModal(null, 'color', 'Choose a color');
+                } else if (data.action === 'roul') {
+                    gameRenderer.showColorPickerModal(null, 'roul', 'Pick a color to draw until!');
+                } else if (data.action === 'target') {
+                    const opps = gameRenderer.gameState ? gameRenderer.gameState.players.filter(p => p.id !== myPlayerId && !p.is_eliminated) : (data.options || []);
+                    gameRenderer.showSwapHandsModal(null, opps);
+                }
                 break;
 
             case 'error':

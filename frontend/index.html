@@ -101,6 +101,20 @@
                 </div>
 
             </div>
+
+            <!-- Live Open Rooms Browser -->
+            <div class="active-rooms-container" style="margin-top: 32px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 22px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <h3 style="font-family: var(--font-heading); font-size: 1.4rem; letter-spacing: 1px; margin: 0; color: var(--accent-yellow);">🌐 OPEN MULTIPLAYER ROOMS</h3>
+                        <p style="margin: 4px 0 0; font-size: 0.85rem; color: var(--text-secondary);">Browse active waiting rooms and jump straight into the action with one click.</p>
+                    </div>
+                    <button id="refreshRoomsBtn" class="btn-secondary" style="padding: 6px 14px; font-size: 0.85rem;">🔄 Refresh</button>
+                </div>
+                <div id="openRoomsList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;">
+                    <p style="color: var(--text-secondary); font-size: 0.95rem; grid-column: 1 / -1; padding: 8px 0;">No active public rooms waiting. Create one above to invite friends!</p>
+                </div>
+            </div>
         </section>
 
         <!-- 2. Waiting Room View -->
@@ -143,6 +157,7 @@
                     </div>
                     <div style="display: flex; gap: 14px; align-items: center;">
                         <span style="font-size: 0.9rem; font-weight: 700; color: var(--accent-red);">Mercy Knockout: <strong>25 Cards</strong></span>
+                        <button id="leaveGameBtn" class="btn-secondary" style="padding: 4px 12px; font-size: 0.8rem; margin: 0;">🚪 Leave Game</button>
                     </div>
                 </div>
 
@@ -181,6 +196,7 @@
                 <!-- Bottom Hand Rack -->
                 <div class="player-hand-rack">
                     <div class="hand-actions-bar">
+                        <button id="drawCardActionBtn" class="draw-action-btn" disabled>📥 DRAW CARD</button>
                         <button id="unoCallBtn" class="uno-btn" disabled>🗣️ SHOUT UNO!</button>
                     </div>
 
