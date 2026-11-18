@@ -1,4 +1,12 @@
-// Game UI & Interaction Renderer matching unonomercy.in logic
+// Game UI & Interaction Renderer matching UNO No Mercy.html gameplay logic
+
+const COLOR_MAP = {
+    'R': { name: 'Red', hex: '#d72600' },
+    'Y': { name: 'Yellow', hex: '#d99a00' },
+    'G': { name: 'Green', hex: '#2a9d48' },
+    'B': { name: 'Blue', hex: '#0b6fd1' },
+    'W': { name: 'Wild', hex: '#222222' }
+};
 
 class UnoGameRenderer {
     constructor() {
@@ -15,7 +23,6 @@ class UnoGameRenderer {
         this.penaltyBanner = document.getElementById('penaltyStackBanner');
         this.penaltyValueEl = document.getElementById('penaltyValueText');
         this.turnPill = document.getElementById('turnStatusPill');
-        this.unoBtn = document.getElementById('unoCallBtn');
         this.floatingEmojiLayer = document.getElementById('floatingEmojiLayer');
 
         this._setupListeners();
@@ -38,28 +45,29 @@ class UnoGameRenderer {
             });
         }
 
-        // UNO Button click
-        if (this.unoBtn) {
-            this.unoBtn.addEventListener('click', () => {
-                if (this.gameState && this.gameState.can_call_uno) {
-                    this.sendAction({ type: 'call_uno' });
-                    window.sounds.unoShout();
-                }
+        // UNO Call Button
+        const unoBtn = document.getElementById('unoCallBtn');
+        if (unoBtn) {
+            unoBtn.addEventListener('click', () => {
+                this.sendAction({ type: 'call_uno' });
+                window.sounds.unoShout();
+                unoBtn.classList.add('pulse');
+                setTimeout(() => unoBtn.classList.remove('pulse'), 1000);
             });
         }
 
         // Color selection buttons
         document.querySelectorAll('.color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const color = e.currentTarget.getAttribute('data-color');
+                const colorCode = e.currentTarget.getAttribute('data-color');
                 const modal = document.getElementById('colorPickerModal');
-                const actionType = modal.getAttribute('data-action') || 'choose_color';
+                const actionType = modal.getAttribute('data-action') || 'color';
                 modal.classList.remove('active');
 
                 this.sendAction({
                     type: 'resolve_action',
                     action: actionType,
-                    color: color
+                    color: colorCode
                 });
                 window.sounds.playCard();
             });
@@ -144,21 +152,12 @@ class UnoGameRenderer {
             this.topCardImg.alt = top.display_name;
         }
 
-        // Active color
-        const color = this.gameState.current_color || 'wild';
-        this.activeColorBadge.textContent = color.toUpperCase();
-        this.activeColorBadge.style.background = this.getColorHex(color);
-        this.activeColorBadge.style.color = (color === 'yellow') ? '#000' : '#fff';
-    }
-
-    getColorHex(color) {
-        switch (color) {
-            case 'red': return '#ff1a4b';
-            case 'yellow': return '#ffd000';
-            case 'green': return '#00e676';
-            case 'blue': return '#00b0ff';
-            default: return '#7b2cbf';
-        }
+        // Active color badge
+        const color = this.gameState.current_color || 'R';
+        const colorInfo = COLOR_MAP[color] || { name: 'Red', hex: '#d72600' };
+        this.activeColorBadge.textContent = colorInfo.name.toUpperCase();
+        this.activeColorBadge.style.background = colorInfo.hex;
+        this.activeColorBadge.style.color = (color === 'Y') ? '#000' : '#fff';
     }
 
     renderOpponents() {
@@ -178,16 +177,16 @@ class UnoGameRenderer {
             if (p.is_eliminated) pod.classList.add('eliminated');
 
             let meterClass = "safe";
-            let meterText = `${p.card_count} Cards`;
+            let meterText = `${p.card_count} / 25 cards`;
             if (p.is_eliminated) {
                 meterClass = "dead";
-                meterText = "💀 ELIMINATED";
+                meterText = "💀 OUT (Mercy)";
             } else if (p.card_count >= 20) {
                 meterClass = "critical";
-                meterText = `⚠️ CRITICAL: ${p.card_count}/25`;
+                meterText = `⚠️ WARN: ${p.card_count} / 25`;
             } else if (p.card_count >= 15) {
                 meterClass = "warning";
-                meterText = `⚠️ ${p.card_count}/25`;
+                meterText = `⚠️ ${p.card_count} / 25`;
             }
 
             pod.innerHTML = `
@@ -199,19 +198,6 @@ class UnoGameRenderer {
                     <span class="mercy-meter ${meterClass}">${meterText}</span>
                 </div>
             `;
-
-            // UNO Catch button
-            if (p.card_count === 1 && !p.called_uno && !p.is_eliminated) {
-                const catchBtn = document.createElement('button');
-                catchBtn.className = "btn-primary";
-                catchBtn.style.padding = "4px 8px";
-                catchBtn.style.fontSize = "0.75rem";
-                catchBtn.textContent = "🚨 Catch UNO!";
-                catchBtn.onclick = () => {
-                    this.sendAction({ type: 'catch_uno', target_id: p.id });
-                };
-                pod.querySelector('.opponent-info-box').appendChild(catchBtn);
-            }
 
             this.opponentsContainer.appendChild(pod);
         });
@@ -228,14 +214,20 @@ class UnoGameRenderer {
     renderMyHand() {
         this.cardsFanEl.innerHTML = '';
         const validIds = new Set(this.gameState.my_valid_cards || []);
-        const myHand = this.gameState.my_hand || [];
+        let myHand = this.gameState.my_hand || [];
 
-        if (this.gameState.can_call_uno) {
-            this.unoBtn.classList.add('pulse');
-            this.unoBtn.disabled = false;
-        } else {
-            this.unoBtn.classList.remove('pulse');
-            this.unoBtn.disabled = true;
+        // Sort hand matching UNO No Mercy.html:
+        // 'RYGBW'.indexOf(x.color) - 'RYGBW'.indexOf(y.color) || (x.type > y.type ? 1 : -1)
+        myHand = [...myHand].sort((x, y) => {
+            const order = 'RYGBW';
+            const cDiff = order.indexOf(x.color) - order.indexOf(y.color);
+            if (cDiff !== 0) return cDiff;
+            return (x.type > y.type ? 1 : -1);
+        });
+
+        const unoBtn = document.getElementById('unoCallBtn');
+        if (unoBtn) {
+            unoBtn.disabled = myHand.length > 2;
         }
 
         myHand.forEach(card => {
@@ -255,17 +247,8 @@ class UnoGameRenderer {
     }
 
     onPlayCardClicked(card) {
-        if (card.is_wild && card.card_type !== 'roulette') {
-            this.showColorPickerModal(card.id, 'choose_color');
-            return;
-        }
-
-        if (card.card_type === 'roulette') {
-            this.showColorPickerModal(card.id, 'choose_roulette_color');
-            return;
-        }
-
-        if (card.card_type === 'number' && card.value === '7') {
+        // 7 Hand Swap modal
+        if (card.type === '7') {
             const activeOpponents = this.gameState.players.filter(p => p.id !== this.myPlayerId && !p.is_eliminated);
             if (activeOpponents.length > 1) {
                 this.showSwapHandsModal(card.id, activeOpponents);
@@ -273,6 +256,13 @@ class UnoGameRenderer {
             }
         }
 
+        // Wild color picker
+        if (card.color === 'W' && card.type !== 'roul') {
+            this.showColorPickerModal(card.id, 'color', 'Choose a color');
+            return;
+        }
+
+        // Normal play
         this.sendAction({
             type: 'play_card',
             card_id: card.id
@@ -280,8 +270,9 @@ class UnoGameRenderer {
         window.sounds.playCard();
     }
 
-    showColorPickerModal(cardId, actionType) {
+    showColorPickerModal(cardId, actionType, title = 'Choose a color') {
         const modal = document.getElementById('colorPickerModal');
+        modal.querySelector('h2').textContent = title;
         modal.setAttribute('data-card-id', cardId);
         modal.setAttribute('data-action', actionType);
         modal.classList.add('active');
@@ -300,7 +291,7 @@ class UnoGameRenderer {
             btn.style.alignItems = "center";
             btn.innerHTML = `
                 <span>${this.getAvatarEmoji(p.avatar, p.is_ai)} ${this.escapeHtml(p.name)}</span>
-                <span class="mercy-meter safe">${p.card_count} Cards</span>
+                <span class="mercy-meter safe">${p.card_count} cards</span>
             `;
             btn.onclick = () => {
                 modal.classList.remove('active');
@@ -319,11 +310,11 @@ class UnoGameRenderer {
 
     checkPendingActions() {
         if (this.gameState.pending_action) {
-            if (this.gameState.pending_action === 'choose_color') {
-                this.showColorPickerModal(this.gameState.action_context.card_id, 'choose_color');
-            } else if (this.gameState.pending_action === 'choose_roulette_color') {
-                this.showColorPickerModal(this.gameState.action_context.card_id, 'choose_roulette_color');
-            } else if (this.gameState.pending_action === 'swap_hand') {
+            if (this.gameState.pending_action === 'color') {
+                this.showColorPickerModal(this.gameState.action_context.card_id, 'color', 'Choose a color');
+            } else if (this.gameState.pending_action === 'roul') {
+                this.showColorPickerModal(null, 'roul', 'Pick a color to draw until!');
+            } else if (this.gameState.pending_action === 'target') {
                 const opponents = this.gameState.players.filter(p => p.id !== this.myPlayerId && !p.is_eliminated);
                 this.showSwapHandsModal(this.gameState.action_context.card_id, opponents);
             }

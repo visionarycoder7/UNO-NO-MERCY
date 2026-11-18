@@ -2,83 +2,121 @@ import uuid
 import random
 from typing import List, Dict, Any, Optional
 
-COLORS = ["red", "yellow", "green", "blue"]
+# Color mapping: R, Y, G, B, W (matching UNO No Mercy.html)
+COLOR_NAMES = {
+    "R": "Red",
+    "Y": "Yellow",
+    "G": "Green",
+    "B": "Blue",
+    "W": "Wild"
+}
+COLOR_CODES = ["R", "Y", "G", "B"]
 
-# Action types matching asset names
-TYPE_NUMBER = "number"
+# Type constants matching UNO No Mercy.html
 TYPE_SKIP = "skip"
-TYPE_SKIP_ALL = "skip_all"
-TYPE_REVERSE = "reverse"
-TYPE_DRAW_2 = "draw2"
-TYPE_DRAW_4 = "draw4"
-TYPE_DISCARD_ALL = "discard_all"
-TYPE_WILD_ROULETTE = "roulette"
-TYPE_WILD_REVERSE_DRAW_4 = "draw4"  # wild_draw4 is reverse +4 in No Mercy
-TYPE_WILD_DRAW_6 = "draw6"
-TYPE_WILD_DRAW_10 = "draw10"
+TYPE_REV = "rev"
+TYPE_D2 = "d2"
+TYPE_DISCARD = "discard"
+TYPE_D4 = "d4"
+TYPE_SKIPALL = "skipall"
+TYPE_WRD4 = "wrd4"
+TYPE_WD6 = "wd6"
+TYPE_WD10 = "wd10"
+TYPE_ROUL = "roul"
+
+TYPE_NAMES = {
+    "skip": "Skip",
+    "rev": "Reverse",
+    "d2": "Draw 2",
+    "discard": "Discard All",
+    "d4": "Draw 4",
+    "skipall": "Skip Everyone",
+    "wrd4": "Wild Reverse Draw 4",
+    "wd6": "Wild Draw 6",
+    "wd10": "Wild Draw 10",
+    "roul": "Wild Color Roulette"
+}
+
+DRAW_VALUES = {
+    "d2": 2,
+    "d4": 4,
+    "wrd4": 4,
+    "wd6": 6,
+    "wd10": 10
+}
+
+# Mapping to asset webp files
+ASSET_COLOR_MAP = {
+    "R": "red",
+    "Y": "yellow",
+    "G": "green",
+    "B": "blue"
+}
+
+ASSET_TYPE_MAP = {
+    "skip": "skip",
+    "rev": "reverse",
+    "d2": "draw2",
+    "discard": "discard_all",
+    "d4": "draw4",
+    "skipall": "skip_all",
+    "wrd4": "draw4",
+    "wd6": "draw6",
+    "wd10": "draw10",
+    "roul": "roulette"
+}
 
 class Card:
     def __init__(
         self,
-        card_id: str,
-        color: str,  # "red", "yellow", "green", "blue", or "wild"
-        card_type: str,
-        value: Optional[str] = None,  # "0" to "9" or action name
-        penalty: int = 0
+        color_or_id: str,
+        card_type_or_color: str,
+        card_type: Optional[str] = None,
+        card_id: Optional[str] = None
     ):
-        self.id = card_id
-        self.color = color
-        self.card_type = card_type
-        self.value = value
-        self.penalty = penalty
+        if card_type is not None:
+            self.id = color_or_id
+            self.color = card_type_or_color
+            self.card_type = card_type
+        else:
+            self.color = color_or_id
+            self.card_type = card_type_or_color
+            self.id = card_id or f"{self.color}_{self.card_type}_{uuid.uuid4().hex[:6]}"
 
     @property
     def is_wild(self) -> bool:
-        return self.color == "wild"
+        return self.color == "W"
+
+    @property
+    def draw_val(self) -> int:
+        return DRAW_VALUES.get(self.card_type, 0)
 
     @property
     def is_draw_card(self) -> bool:
-        return self.penalty > 0
+        return self.draw_val > 0
+
+    @property
+    def display_name(self) -> str:
+        color_name = (COLOR_NAMES[self.color] + " ") if self.color != "W" else ""
+        type_name = self.card_type if self.card_type.isdigit() else TYPE_NAMES.get(self.card_type, self.card_type)
+        return color_name + type_name
 
     @property
     def image_url(self) -> str:
         if self.is_wild:
-            return f"/static/cards/wild_{self.value}.webp"
-        return f"/static/cards/{self.color}_{self.value}.webp"
-
-    @property
-    def display_name(self) -> str:
-        if self.card_type == TYPE_NUMBER:
-            return f"{self.color.capitalize()} {self.value}"
-        elif self.card_type == TYPE_SKIP:
-            return f"{self.color.capitalize()} Skip"
-        elif self.card_type == TYPE_SKIP_ALL:
-            return f"{self.color.capitalize()} Skip Everyone"
-        elif self.card_type == TYPE_REVERSE:
-            return f"{self.color.capitalize()} Reverse"
-        elif self.card_type == TYPE_DRAW_2:
-            return f"{self.color.capitalize()} +2"
-        elif self.card_type == TYPE_DRAW_4:
-            return f"{self.color.capitalize()} +4"
-        elif self.card_type == TYPE_DISCARD_ALL:
-            return f"{self.color.capitalize()} Discard All"
-        elif self.card_type == TYPE_WILD_ROULETTE:
-            return "Wild Color Roulette"
-        elif self.card_type == TYPE_WILD_REVERSE_DRAW_4:
-            return "Wild Reverse +4"
-        elif self.card_type == TYPE_WILD_DRAW_6:
-            return "Wild +6"
-        elif self.card_type == TYPE_WILD_DRAW_10:
-            return "Wild +10"
-        return "Unknown Card"
+            asset_type = ASSET_TYPE_MAP.get(self.card_type, self.card_type)
+            return f"/static/cards/wild_{asset_type}.webp"
+        
+        asset_color = ASSET_COLOR_MAP.get(self.color, "red")
+        asset_type = ASSET_TYPE_MAP.get(self.card_type, self.card_type)
+        return f"/static/cards/{asset_color}_{asset_type}.webp"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "color": self.color,
-            "card_type": self.card_type,
-            "value": self.value,
-            "penalty": self.penalty,
+            "type": self.card_type,
+            "draw_val": self.draw_val,
             "display_name": self.display_name,
             "is_wild": self.is_wild,
             "image_url": self.image_url
@@ -89,125 +127,48 @@ class Card:
         return cls(
             card_id=data["id"],
             color=data["color"],
-            card_type=data["card_type"],
-            value=data.get("value"),
-            penalty=data.get("penalty", 0)
+            card_type=data.get("type", data.get("card_type"))
         )
 
 
 def build_no_mercy_deck() -> List[Card]:
     """
-    Builds the official 168-card UNO Show 'Em No Mercy deck matching unonomercy.in assets.
+    Builds the exact 168-card deck from UNO No Mercy.html:
+    - 2 of each number 0..9 per color R, Y, G, B (80 cards)
+    - 3 of each: skip, rev, d2, discard per color (48 cards)
+    - 2 of each: d4, skipall per color (16 cards)
+    - 8 of wrd4, 8 of wd6 (16 cards)
+    - 4 of wd10, 4 of roul (8 cards)
+    Total = 80 + 48 + 16 + 16 + 8 = 168 cards.
     """
     deck: List[Card] = []
 
-    # 1. Number Cards: 0 to 9 in each of the 4 colors (2 each = 80 cards)
-    for color in COLORS:
-        for num in range(10):
-            for i in range(2):
-                deck.append(Card(
-                    card_id=f"{color}_{num}_{i+1}_{uuid.uuid4().hex[:6]}",
-                    color=color,
-                    card_type=TYPE_NUMBER,
-                    value=str(num)
-                ))
+    # Colored cards (144 cards)
+    for c in COLOR_CODES:
+        for n in range(10):
+            deck.append(Card(f"{c}_{n}_1_{uuid.uuid4().hex[:6]}", c, str(n)))
+            deck.append(Card(f"{c}_{n}_2_{uuid.uuid4().hex[:6]}", c, str(n)))
 
-    # 2. Action Colored Cards
-    for color in COLORS:
-        # Skip: 3 per color (12 cards)
         for i in range(3):
-            deck.append(Card(
-                card_id=f"{color}_skip_{i+1}_{uuid.uuid4().hex[:6]}",
-                color=color,
-                card_type=TYPE_SKIP,
-                value="skip"
-            ))
+            deck.append(Card(f"{c}_skip_{i+1}_{uuid.uuid4().hex[:6]}", c, TYPE_SKIP))
+            deck.append(Card(f"{c}_rev_{i+1}_{uuid.uuid4().hex[:6]}", c, TYPE_REV))
+            deck.append(Card(f"{c}_d2_{i+1}_{uuid.uuid4().hex[:6]}", c, TYPE_D2))
+            deck.append(Card(f"{c}_discard_{i+1}_{uuid.uuid4().hex[:6]}", c, TYPE_DISCARD))
 
-        # Skip Everyone (skip_all): 2 per color (8 cards)
         for i in range(2):
-            deck.append(Card(
-                card_id=f"{color}_skip_all_{i+1}_{uuid.uuid4().hex[:6]}",
-                color=color,
-                card_type=TYPE_SKIP_ALL,
-                value="skip_all"
-            ))
+            deck.append(Card(f"{c}_d4_{i+1}_{uuid.uuid4().hex[:6]}", c, TYPE_D4))
+            deck.append(Card(f"{c}_skipall_{i+1}_{uuid.uuid4().hex[:6]}", c, TYPE_SKIPALL))
 
-        # Reverse: 3 per color (12 cards)
-        for i in range(3):
-            deck.append(Card(
-                card_id=f"{color}_reverse_{i+1}_{uuid.uuid4().hex[:6]}",
-                color=color,
-                card_type=TYPE_REVERSE,
-                value="reverse"
-            ))
-
-        # Draw 2 (+2): 3 per color (12 cards)
-        for i in range(3):
-            deck.append(Card(
-                card_id=f"{color}_draw2_{i+1}_{uuid.uuid4().hex[:6]}",
-                color=color,
-                card_type=TYPE_DRAW_2,
-                value="draw2",
-                penalty=2
-            ))
-
-        # Draw 4 (+4): 2 per color (8 cards)
-        for i in range(2):
-            deck.append(Card(
-                card_id=f"{color}_draw4_{i+1}_{uuid.uuid4().hex[:6]}",
-                color=color,
-                card_type=TYPE_DRAW_4,
-                value="draw4",
-                penalty=4
-            ))
-
-        # Discard All: 3 per color (12 cards)
-        for i in range(3):
-            deck.append(Card(
-                card_id=f"{color}_discard_all_{i+1}_{uuid.uuid4().hex[:6]}",
-                color=color,
-                card_type=TYPE_DISCARD_ALL,
-                value="discard_all"
-            ))
-
-    # 3. Wild Cards
-    # Wild Color Roulette: 8 cards
+    # Wild cards (24 cards)
     for i in range(8):
-        deck.append(Card(
-            card_id=f"wild_roulette_{i+1}_{uuid.uuid4().hex[:6]}",
-            color="wild",
-            card_type=TYPE_WILD_ROULETTE,
-            value="roulette"
-        ))
+        deck.append(Card(f"W_wrd4_{i+1}_{uuid.uuid4().hex[:6]}", "W", TYPE_WRD4))
+        deck.append(Card(f"W_wd6_{i+1}_{uuid.uuid4().hex[:6]}", "W", TYPE_WD6))
 
-    # Wild Reverse Draw 4: 8 cards
-    for i in range(8):
-        deck.append(Card(
-            card_id=f"wild_draw4_{i+1}_{uuid.uuid4().hex[:6]}",
-            color="wild",
-            card_type=TYPE_WILD_REVERSE_DRAW_4,
-            value="draw4",
-            penalty=4
-        ))
-
-    # Wild Draw 6: 4 cards
     for i in range(4):
-        deck.append(Card(
-            card_id=f"wild_draw6_{i+1}_{uuid.uuid4().hex[:6]}",
-            color="wild",
-            card_type=TYPE_WILD_DRAW_6,
-            value="draw6",
-            penalty=6
-        ))
-
-    # Wild Draw 10: 4 cards
-    for i in range(4):
-        deck.append(Card(
-            card_id=f"wild_draw10_{i+1}_{uuid.uuid4().hex[:6]}",
-            color="wild",
-            card_type=TYPE_WILD_DRAW_10,
-            value="draw10",
-            penalty=10
-        ))
+        deck.append(Card(f"W_wd10_{i+1}_{uuid.uuid4().hex[:6]}", "W", TYPE_WD10))
+        deck.append(Card(f"W_roul_{i+1}_{uuid.uuid4().hex[:6]}", "W", TYPE_ROUL))
 
     return deck
+
+
+create_deck = build_no_mercy_deck

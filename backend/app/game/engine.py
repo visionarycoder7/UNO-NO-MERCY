@@ -1,25 +1,27 @@
 import random
 import time
-import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
 from backend.app.game.cards import (
     Card,
     build_no_mercy_deck,
-    COLORS,
-    TYPE_NUMBER,
+    COLOR_CODES,
+    COLOR_NAMES,
+    DRAW_VALUES,
     TYPE_SKIP,
-    TYPE_SKIP_ALL,
-    TYPE_REVERSE,
-    TYPE_DRAW_2,
-    TYPE_DRAW_4,
-    TYPE_DISCARD_ALL,
-    TYPE_WILD_ROULETTE,
-    TYPE_WILD_REVERSE_DRAW_4,
-    TYPE_WILD_DRAW_6,
-    TYPE_WILD_DRAW_10
+    TYPE_REV,
+    TYPE_D2,
+    TYPE_DISCARD,
+    TYPE_D4,
+    TYPE_SKIPALL,
+    TYPE_WRD4,
+    TYPE_WD6,
+    TYPE_WD10,
+    TYPE_ROUL
 )
-from backend.app.config import INITIAL_HAND_SIZE, MERCY_CARD_LIMIT
+
+MERCY_CARD_LIMIT = 25
+INITIAL_HAND_SIZE = 7
 
 class UnoNoMercyGame:
     def __init__(self, room_code: str, players_info: List[Dict[str, Any]]):
@@ -38,19 +40,15 @@ class UnoNoMercyGame:
                 "knockouts_caused": 0
             })
 
-        self.direction = 1  # 1 for clockwise, -1 for counter-clockwise
+        self.direction = 1  # 1: clockwise, -1: counter-clockwise
         self.current_player_idx = 0
         self.draw_pile: List[Card] = []
         self.discard_pile: List[Card] = []
-        self.current_color: Optional[str] = None
-
-        # Stacking mechanic state
+        self.current_color: Optional[str] = None  # 'R', 'Y', 'G', 'B'
         self.pending_penalty = 0
-        self.pending_penalty_value = 0  # 2, 4, 6, 10
-        self.last_penalty_source_id: Optional[str] = None
 
-        # Interactive states: "choose_color", "swap_hand", "roulette_target_color"
-        self.pending_action: Optional[str] = None
+        # Modal/Action state
+        self.pending_action: Optional[str] = None  # "color", "target", "roul"
         self.action_player_id: Optional[str] = None
         self.action_context: Dict[str, Any] = {}
 
@@ -60,48 +58,38 @@ class UnoNoMercyGame:
         self.start_time = time.time()
         self.event_log: List[Dict[str, Any]] = []
 
-        self._initialize_game()
+        self._start_game()
 
-    def _log_event(self, event_type: str, message: str, details: Optional[dict] = None):
-        event = {
-            "type": event_type,
-            "message": message,
-            "timestamp": time.time(),
-            "details": details or {}
-        }
-        self.event_log.append(event)
+    def _log(self, text: str):
+        self.event_log.append({
+            "message": text,
+            "timestamp": time.time()
+        })
         if len(self.event_log) > 50:
             self.event_log.pop(0)
 
-    def _initialize_game(self):
-        # 1. Shuffle full 168 card deck
+    def _start_game(self):
+        # 1. Build and shuffle deck
         self.draw_pile = build_no_mercy_deck()
         random.shuffle(self.draw_pile)
 
-        # 2. Deal initial hand (7 cards) to each player
-        for player in self.players:
-            player["hand"] = [self.draw_pile.pop() for _ in range(INITIAL_HAND_SIZE)]
+        # 2. Deal 7 cards to each player
+        for _ in range(INITIAL_HAND_SIZE):
+            for p in self.players:
+                p["hand"].append(self.draw_pile.pop())
 
-        # 3. Find a starting card from draw pile that is a standard number card
-        first_card_idx = None
-        for i, card in enumerate(self.draw_pile):
-            if card.card_type == TYPE_NUMBER and not card.is_wild:
-                first_card_idx = i
+        # 3. Find first card that is a standard number card
+        first_card = None
+        while True:
+            c = self.draw_pile.pop()
+            if c.card_type.isdigit():
+                first_card = c
                 break
+            self.draw_pile.insert(0, c)
 
-        if first_card_idx is not None:
-            first_card = self.draw_pile.pop(first_card_idx)
-        else:
-            first_card = self.draw_pile.pop()
-
-        self.discard_pile.append(first_card)
+        self.discard_pile = [first_card]
         self.current_color = first_card.color
-
-        self._log_event(
-            "game_started",
-            f"Game started! First card is {first_card.display_name}.",
-            {"first_card": first_card.to_dict()}
-        )
+        self._log(f"Game started. First card: {first_card.display_name}")
 
     @property
     def top_card(self) -> Optional[Card]:
@@ -111,166 +99,100 @@ class UnoNoMercyGame:
     def current_player(self) -> Dict[str, Any]:
         return self.players[self.current_player_idx]
 
-    def _get_active_players(self) -> List[Dict[str, Any]]:
-        return [p for p in self.players if not p["is_eliminated"]]
+    def _get_active_indices(self) -> List[int]:
+        return [i for i, p in enumerate(self.players) if not p["is_eliminated"]]
 
-    def _next_player_index(self, start_idx: int, step: int = 1) -> int:
+    def _next_player_index(self, start_idx: int) -> int:
         n = len(self.players)
         curr = start_idx
-        for _ in range(n):
-            curr = (curr + (step * self.direction)) % n
+        while True:
+            curr = (curr + self.direction + n) % n
             if not self.players[curr]["is_eliminated"]:
                 return curr
-        return start_idx
 
-    def _advance_turn(self, skip_count: int = 0):
+    def _advance_turn(self, skip: int = 0, from_idx: Optional[int] = None):
         if self.game_over:
             return
 
-        active = self._get_active_players()
-        if len(active) <= 1:
-            self._check_victory()
-            return
+        c = self.current_player_idx if from_idx is None else from_idx
+        for _ in range(skip + 1):
+            c = self._next_player_index(c)
 
-        # Advance current player
-        steps = 1 + skip_count
-        new_idx = self.current_player_idx
-        for _ in range(steps):
-            new_idx = self._next_player_index(new_idx, step=1)
+        self.current_player_idx = c
+        self._log(f"It's now {self.current_player['name']}'s turn.")
 
-        self.current_player_idx = new_idx
-        if len(self.current_player["hand"]) > 1:
-            self.current_player["called_uno"] = False
-
-        self._log_event(
-            "turn_change",
-            f"It's now {self.current_player['name']}'s turn.",
-            {"current_player_id": self.current_player["id"]}
-        )
-
-    def _reshuffle_if_needed(self, count_needed: int = 1):
-        if len(self.draw_pile) < count_needed and len(self.discard_pile) > 1:
+    def _reshuffle_if_needed(self):
+        if not self.draw_pile and len(self.discard_pile) > 1:
             top = self.discard_pile.pop()
-            reshuffled = self.discard_pile[:]
+            self.draw_pile = self.discard_pile[:]
             self.discard_pile = [top]
-            random.shuffle(reshuffled)
-            self.draw_pile.extend(reshuffled)
-            self._log_event("deck_reshuffle", "Draw deck was reshuffled from discard pile.")
+            random.shuffle(self.draw_pile)
+            self._log("Reshuffled discard pile into draw deck.")
 
-    def _draw_cards_to_player(self, player: Dict[str, Any], count: int) -> List[Card]:
-        drawn: List[Card] = []
-        for _ in range(count):
-            self._reshuffle_if_needed(1)
-            if not self.draw_pile:
-                break
-            card = self.draw_pile.pop()
-            player["hand"].append(card)
-            drawn.append(card)
+    def _draw_card_from_deck(self) -> Optional[Card]:
+        self._reshuffle_if_needed()
+        return self.draw_pile.pop() if self.draw_pile else None
 
-            # Check Mercy limit during draw
-            if len(player["hand"]) >= MERCY_CARD_LIMIT:
-                self._eliminate_player(player, reason=f"Mercy Rule ({len(player['hand'])} cards)")
-                break
+    def _check_mercy(self):
+        """
+        Mercy Rule: If any player accumulates 25 or more cards, they are immediately knocked out.
+        """
+        for p in self.players:
+            if not p["is_eliminated"] and len(p["hand"]) >= MERCY_CARD_LIMIT:
+                p["is_eliminated"] = True
+                p["eliminated_reason"] = f"Mercy Rule ({len(p['hand'])} cards)"
+                # Return their hand to deck and shuffle
+                self.draw_pile.extend(p["hand"])
+                p["hand"] = []
+                random.shuffle(self.draw_pile)
+                self._log(f"💀 {p['name']} reached 25 cards and is out (Mercy Rule)!")
 
-        return drawn
-
-    def _eliminate_player(self, player: Dict[str, Any], reason: str = "Mercy Rule"):
-        if player["is_eliminated"]:
-            return
-
-        player["is_eliminated"] = True
-        player["eliminated_reason"] = reason
-
-        if self.last_penalty_source_id:
-            for p in self.players:
-                if p["id"] == self.last_penalty_source_id and p["id"] != player["id"]:
-                    p["knockouts_caused"] += 1
-                    break
-
-        discarded_cards = player["hand"][:]
-        player["hand"] = []
-        self.draw_pile = discarded_cards + self.draw_pile
-
-        self._log_event(
-            "mercy_knockout",
-            f"💀 {player['name']} was KNOCKED OUT by the {reason}!",
-            {"eliminated_player_id": player["id"], "reason": reason}
-        )
-
-        self._check_victory()
-
-    def _check_victory(self) -> bool:
-        if self.game_over:
-            return True
-
-        active = self._get_active_players()
-        if len(active) == 1:
-            self.winner = active[0]
+        active = self._get_active_indices()
+        if len(active) == 1 and self.winner is None:
+            self.winner = self.players[active[0]]
             self.win_reason = "Last Survivor (Mercy Rule)"
             self.game_over = True
-            self._log_event("game_over", f"🏆 {self.winner['name']} WINS as the Last Survivor!", {"winner": self.winner})
+            self._log(f"🏆 {self.winner['name']} WINS as the Last Survivor!")
             return True
-
-        for p in active:
-            if len(p["hand"]) == 0:
-                self.winner = p
-                self.win_reason = "Emptied Hand"
-                self.game_over = True
-                self._log_event("game_over", f"🏆 {p['name']} played their final card and WINS!", {"winner": p})
-                return True
 
         return False
 
     def can_play_card(self, player_id: str, card: Card) -> Tuple[bool, str]:
+        """
+        Validation logic matching UNO No Mercy.html:
+        if (G.pend) return dv(c) > 0 && dv(c) >= dv(t);
+        return c.color === 'W' || c.color === G.color || c.type === t.type;
+        """
         if self.game_over:
-            return False, "Game is already over."
+            return False, "Game is over."
 
         if self.pending_action:
-            return False, f"Waiting for action: {self.pending_action}."
+            return False, f"Waiting for action: {self.pending_action}"
 
         if self.current_player["id"] != player_id:
-            return False, "It is not your turn."
+            return False, "Not your turn."
 
-        # Case 1: Active Penalty Stacking Mode (+2, +4, +6, +10)
-        if self.pending_penalty > 0:
-            if not card.is_draw_card:
-                return False, f"A penalty of +{self.pending_penalty} is active! You must stack equal/higher draw card or draw."
-
-            if card.penalty < self.pending_penalty_value:
-                return False, f"Cannot play +{card.penalty} on top of +{self.pending_penalty_value}. Must be equal or higher!"
-
-            return True, "Valid stack move."
-
-        # Case 2: Normal Turn
         top = self.top_card
         if not top:
+            return True, "Valid."
+
+        # Case 1: Penalty is pending (Stacking Rule)
+        if self.pending_penalty > 0:
+            if card.draw_val > 0 and card.draw_val >= top.draw_val:
+                return True, "Valid stack move."
+            return False, f"Must play an equal or higher draw card (+{top.draw_val}+) or take penalty."
+
+        # Case 2: Normal turn
+        if card.color == "W" or card.color == self.current_color or card.card_type == top.card_type:
             return True, "Valid move."
 
-        if card.is_wild:
-            return True, "Valid wild move."
-
-        if card.color == self.current_color:
-            return True, "Valid color match."
-
-        if card.card_type == TYPE_NUMBER and top.card_type == TYPE_NUMBER and str(card.value) == str(top.value):
-            return True, "Valid number match."
-
-        if card.card_type == top.card_type and card.card_type != TYPE_NUMBER:
-            return True, "Valid action match."
-
-        return False, f"Card does not match current color ({self.current_color}) or symbol."
+        return False, "Card does not match color or symbol."
 
     def get_valid_cards_for_player(self, player_id: str) -> List[str]:
-        player = next((p for p in self.players if p["id"] == player_id), None)
-        if not player or player["is_eliminated"] or self.current_player["id"] != player_id:
+        p = next((x for x in self.players if x["id"] == player_id), None)
+        if not p or p["is_eliminated"] or self.current_player["id"] != player_id:
             return []
-
-        valid_ids = []
-        for card in player["hand"]:
-            can_play, _ = self.can_play_card(player_id, card)
-            if can_play:
-                valid_ids.append(card.id)
-        return valid_ids
+        return [c.id for c in p["hand"] if self.can_play_card(player_id, c)[0]]
 
     def play_card(
         self,
@@ -279,343 +201,268 @@ class UnoNoMercyGame:
         chosen_color: Optional[str] = None,
         target_player_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        player = self.current_player
-        if player["id"] != player_id:
+        """
+        Exact play logic from UNO No Mercy.html:
+        - discard extra cards on 'discard'
+        - reverse / wrd4 logic
+        - accumulate penalty
+        - 7 swap hands
+        - 0 rotate hands
+        - wild color roulette
+        """
+        p = self.current_player
+        if p["id"] != player_id:
             return {"success": False, "error": "Not your turn."}
 
-        card_idx = next((i for i, c in enumerate(player["hand"]) if c.id == card_id), None)
+        card_idx = next((i for i, c in enumerate(p["hand"]) if c.id == card_id), None)
         if card_idx is None:
             return {"success": False, "error": "Card not in hand."}
 
-        card = player["hand"][card_idx]
+        card = p["hand"][card_idx]
         can_play, reason = self.can_play_card(player_id, card)
         if not can_play:
             return {"success": False, "error": reason}
 
-        # Wild card color selection check (unless player is AI or already provided)
-        if card.is_wild and not chosen_color and card.card_type != TYPE_WILD_ROULETTE:
-            if player["is_ai"]:
-                chosen_color = self._bot_pick_best_color(player)
-            else:
-                self.pending_action = "choose_color"
-                self.action_player_id = player_id
-                self.action_context = {"card_id": card_id}
-                return {
-                    "success": True,
-                    "needs_action": "choose_color",
-                    "message": "Choose a color to continue."
-                }
-
-        # 7 Card Hand Swap target check
-        if card.card_type == TYPE_NUMBER and str(card.value) == "7":
-            active_opponents = [p for p in self._get_active_players() if p["id"] != player_id]
+        # Check interactive modals required
+        if card.card_type == "7":
+            active_opponents = [x for x in self.players if x["id"] != player_id and not x["is_eliminated"]]
             if len(active_opponents) > 1 and not target_player_id:
-                if player["is_ai"]:
-                    # Bot swaps with player having fewest cards
-                    target_player_id = min(active_opponents, key=lambda p: len(p["hand"]))["id"]
+                if p["is_ai"]:
+                    # Bot swaps with player having lowest hand
+                    target_player_id = min(active_opponents, key=lambda x: len(x["hand"]))["id"]
                 else:
-                    self.pending_action = "swap_hand"
+                    self.pending_action = "target"
                     self.action_player_id = player_id
                     self.action_context = {"card_id": card_id, "chosen_color": chosen_color}
                     return {
                         "success": True,
-                        "needs_action": "swap_hand",
-                        "options": [{"id": p["id"], "name": p["name"], "cards": len(p["hand"])} for p in active_opponents],
-                        "message": "Choose an opponent to swap hands with!"
+                        "needs_action": "target",
+                        "options": [{"id": x["id"], "name": x["name"], "cards": len(x["hand"])} for x in active_opponents],
+                        "message": "Choose a player to swap hands with!"
                     }
 
-        # Roulette target color check
-        if card.card_type == TYPE_WILD_ROULETTE and not chosen_color:
-            if player["is_ai"]:
-                chosen_color = random.choice(COLORS)
+        if card.color == "W" and card.card_type != TYPE_ROUL and not chosen_color:
+            if p["is_ai"]:
+                chosen_color = self._bot_color(p)
             else:
-                self.pending_action = "choose_roulette_color"
+                self.pending_action = "color"
                 self.action_player_id = player_id
                 self.action_context = {"card_id": card_id}
                 return {
                     "success": True,
-                    "needs_action": "choose_roulette_color",
-                    "message": "Choose a target color for Color Roulette!"
+                    "needs_action": "color",
+                    "message": "Choose a color!"
                 }
 
-        player["hand"].pop(card_idx)
+        # Execute card removal
+        p["hand"].pop(card_idx)
         self.discard_pile.append(card)
 
-        self.pending_action = None
-        self.action_player_id = None
-        self.action_context = {}
+        # Update current color
+        if card.color != "W":
+            self.current_color = card.color
+        elif chosen_color:
+            self.current_color = chosen_color
 
-        self._log_event(
-            "card_played",
-            f"{player['name']} played {card.display_name}.",
-            {"player_id": player_id, "card": card.to_dict()}
-        )
+        color_str = f" → {COLOR_NAMES.get(chosen_color, chosen_color)}" if card.color == "W" and chosen_color else ""
+        self._log(f"{p['name']} played {card.display_name}{color_str}")
 
-        self._handle_card_effects(player, card, chosen_color, target_player_id)
+        # Discard All: dump every card of that color from hand
+        if card.card_type == TYPE_DISCARD:
+            matching = [c for c in p["hand"] if c.color == card.color]
+            p["hand"] = [c for c in p["hand"] if c.color != card.color]
+            self.discard_pile = matching + self.discard_pile
+            if matching:
+                self._log(f"{p['name']} discarded {len(matching)} more {COLOR_NAMES[card.color]} card(s)!")
 
-        if len(player["hand"]) == 1:
-            player["called_uno"] = True
-            self._log_event("uno_called", f"🗣️ {player['name']} called UNO!")
-
-        if self._check_victory():
+        # Win check: hand emptied
+        if len(p["hand"]) == 0:
+            self.winner = p
+            self.win_reason = "Emptied Hand"
+            self.game_over = True
+            self._log(f"🏆 {p['name']} played their final card and WINS!")
             return {"success": True, "game_over": True, "winner": self.winner}
 
-        return {"success": True}
+        skip = 0
+        again = False
 
-    def _handle_card_effects(
-        self,
-        player: Dict[str, Any],
-        card: Card,
-        chosen_color: Optional[str] = None,
-        target_player_id: Optional[str] = None
-    ):
-        if card.is_wild:
-            self.current_color = chosen_color or random.choice(COLORS)
-            self._log_event("color_chosen", f"Color changed to {self.current_color.upper()}.", {"color": self.current_color})
-        else:
-            self.current_color = card.color
+        if card.card_type == TYPE_SKIP:
+            skip = 1
 
-        # 0 Card - Pass all hands in current direction of play
-        if card.card_type == TYPE_NUMBER and str(card.value) == "0":
-            active = self._get_active_players()
-            if len(active) >= 2:
-                old_hands = [p["hand"][:] for p in active]
-                num_active = len(active)
-                for i in range(num_active):
-                    giver_idx = (i - self.direction) % num_active
-                    active[i]["hand"] = old_hands[giver_idx]
+        if card.card_type == TYPE_REV or card.card_type == TYPE_WRD4:
+            self.direction *= -1
+            active_count = len(self._get_active_indices())
+            if card.card_type == TYPE_REV and active_count == 2:
+                skip = 1
 
-                self._log_event("pass_hands", "🔄 Number 0 played! All players passed hands!")
-            self._advance_turn()
-            return
+        if card.draw_val > 0:
+            self.pending_penalty += card.draw_val
 
-        # 7 Card - Swap hand with chosen opponent
-        if card.card_type == TYPE_NUMBER and str(card.value) == "7":
-            active_opponents = [p for p in self._get_active_players() if p["id"] != player["id"]]
+        if card.card_type == TYPE_SKIPALL:
+            again = True
+            self._log("Everyone else is skipped! Taking another turn.")
+
+        # 7 Swap Hands
+        if card.card_type == "7":
+            active_opponents = [x for x in self.players if x["id"] != player_id and not x["is_eliminated"]]
             target = None
             if target_player_id:
-                target = next((p for p in active_opponents if p["id"] == target_player_id), None)
+                target = next((x for x in active_opponents if x["id"] == target_player_id), None)
             if not target and active_opponents:
                 target = active_opponents[0]
 
             if target:
-                player["hand"], target["hand"] = target["hand"], player["hand"]
-                self._log_event(
-                    "swap_hands",
-                    f"🤝 Number 7 played! {player['name']} swapped hands with {target['name']}!",
-                    {"swapper": player["name"], "target": target["name"]}
-                )
-            self._advance_turn()
-            return
+                p["hand"], target["hand"] = target["hand"], p["hand"]
+                self._log(f"{p['name']} swapped hands with {target['name']}!")
 
-        # Discard All
-        if card.card_type == TYPE_DISCARD_ALL:
-            target_color = card.color
-            remaining_hand = []
-            discarded_matching = []
-            for c in player["hand"]:
-                if c.color == target_color:
-                    discarded_matching.append(c)
-                else:
-                    remaining_hand.append(c)
+        # 0 Rotate Hands
+        if card.card_type == "0":
+            # Order of players in direction of play
+            curr_idx = self.current_player_idx
+            order = [curr_idx]
+            nxt_idx = self._next_player_index(curr_idx)
+            while nxt_idx != curr_idx:
+                order.append(nxt_idx)
+                nxt_idx = self._next_player_index(nxt_idx)
 
-            player["hand"] = remaining_hand
-            self.discard_pile.extend(discarded_matching)
-            self._log_event(
-                "discard_all",
-                f"🗑️ {player['name']} dumped {len(discarded_matching)} extra {target_color.upper()} cards!",
-                {"count": len(discarded_matching), "color": target_color}
-            )
-            self._advance_turn()
-            return
+            old_hands = [self.players[k]["hand"][:] for k in order]
+            m = len(order)
+            for n_idx, k in enumerate(order):
+                self.players[k]["hand"] = old_hands[(n_idx - 1 + m) % m]
+            self._log("All hands rotate in direction of play!")
 
-        # Skip All / Skip Everyone
-        if card.card_type == TYPE_SKIP_ALL:
-            self._log_event("skip_everyone", f"⚡ {player['name']} played SKIP EVERYONE and plays again!")
-            return
-
-        # Skip
-        if card.card_type == TYPE_SKIP:
-            next_p = self.players[self._next_player_index(self.current_player_idx, 1)]
-            self._log_event("skip_player", f"⏭️ {next_p['name']} was skipped!")
-            self._advance_turn(skip_count=1)
-            return
-
-        # Reverse
-        if card.card_type == TYPE_REVERSE:
-            active = self._get_active_players()
-            if len(active) == 2:
-                other = next(p for p in active if p["id"] != player["id"])
-                self._log_event("reverse", f"🔁 Reverse played! {other['name']} was skipped.")
-                self._advance_turn(skip_count=1)
-            else:
-                self.direction *= -1
-                self._log_event("reverse", f"🔁 Direction of play REVERSED ({'Clockwise' if self.direction == 1 else 'Counter-Clockwise'}).")
-                self._advance_turn()
-            return
-
-        # Wild Reverse Draw 4
-        if card.card_type == TYPE_WILD_REVERSE_DRAW_4 and card.penalty == 4:
-            active = self._get_active_players()
-            if len(active) > 2:
-                self.direction *= -1
-            self.pending_penalty += 4
-            self.pending_penalty_value = 4
-            self.last_penalty_source_id = player["id"]
-            self._log_event(
-                "penalty_stack",
-                f"🔥 Wild Reverse +4! Penalty is now +{self.pending_penalty}!",
-                {"pending_penalty": self.pending_penalty, "value": 4}
-            )
-            self._advance_turn()
-            return
-
-        # Stacking Draw Cards (+2, +4, Wild +6, Wild +10)
-        if card.is_draw_card:
-            self.pending_penalty += card.penalty
-            self.pending_penalty_value = card.penalty
-            self.last_penalty_source_id = player["id"]
-            self._log_event(
-                "penalty_stack",
-                f"🔥 {card.display_name} played! Penalty is now +{self.pending_penalty}!",
-                {"pending_penalty": self.pending_penalty, "value": card.penalty}
-            )
-            self._advance_turn()
-            return
+        # Check Mercy knockout
+        if self._check_mercy():
+            return {"success": True, "game_over": True, "winner": self.winner}
 
         # Wild Color Roulette
-        if card.card_type == TYPE_WILD_ROULETTE:
-            target_color = chosen_color or random.choice(COLORS)
-            victim_idx = self._next_player_index(self.current_player_idx, 1)
+        if card.card_type == TYPE_ROUL:
+            victim_idx = self._next_player_index(self.current_player_idx)
             victim = self.players[victim_idx]
+            self.pending_action = "roul"
+            self.action_player_id = victim["id"]
+            self.action_context = {"victim_idx": victim_idx}
 
-            self._log_event(
-                "roulette_started",
-                f"🎰 WILD COLOR ROULETTE on {victim['name']}! Must draw until hitting {target_color.upper()}!",
-                {"victim": victim["name"], "target_color": target_color}
-            )
+            if victim["is_ai"]:
+                bot_color = self._bot_color(victim)
+                return self.resolve_roulette(bot_color)
 
-            drawn_count = 0
-            while not victim["is_eliminated"]:
-                self._reshuffle_if_needed(1)
-                if not self.draw_pile:
-                    break
-                drawn_card = self.draw_pile.pop()
-                victim["hand"].append(drawn_card)
-                drawn_count += 1
+            return {
+                "success": True,
+                "needs_action": "roul",
+                "message": f"{victim['name']}, pick a color to draw until!"
+            }
 
-                if len(victim["hand"]) >= MERCY_CARD_LIMIT:
-                    self.last_penalty_source_id = player["id"]
-                    self._eliminate_player(victim, reason=f"Mercy Rule ({len(victim['hand'])} cards)")
-                    break
+        if again:
+            return {"success": True}
 
-                if drawn_card.color == target_color or drawn_card.is_wild:
-                    break
+        self._advance_turn(skip=skip)
+        return {"success": True}
 
-            if not victim["is_eliminated"]:
-                self._log_event(
-                    "roulette_finished",
-                    f"🎰 {victim['name']} drew {drawn_count} cards before hitting {target_color.upper()}!",
-                    {"drawn_count": drawn_count}
-                )
+    def resolve_roulette(self, color: str) -> Dict[str, Any]:
+        """
+        Victim draws cards until one matches chosen color, then their turn is skipped.
+        """
+        victim_idx = self.action_context.get("victim_idx")
+        if victim_idx is None:
+            victim_idx = self._next_player_index(self.current_player_idx)
 
-            self._advance_turn(skip_count=1)
-            return
+        victim = self.players[victim_idx]
+        self.pending_action = None
+        self.action_player_id = None
+        self.action_context = {}
+        self.current_color = color
 
-        self._advance_turn()
+        n = 0
+        while True:
+            c = self._draw_card_from_deck()
+            if not c:
+                break
+            victim["hand"].append(c)
+            n += 1
+            if c.color == color or len(victim["hand"]) >= MERCY_CARD_LIMIT:
+                break
+
+        self._log(f"{victim['name']} chose {COLOR_NAMES.get(color, color)} and drew {n} card(s), turn skipped.")
+
+        if self._check_mercy():
+            return {"success": True, "game_over": True, "winner": self.winner}
+
+        # Advance turn from the victim
+        self._advance_turn(skip=0, from_idx=victim_idx)
+        return {"success": True}
 
     def player_draw(self, player_id: str) -> Dict[str, Any]:
-        player = self.current_player
-        if player["id"] != player_id:
+        """
+        Draw logic matching UNO No Mercy.html drawAct(i):
+        - If penalty pending: draws pending_penalty, resets pending_penalty=0, turn ends.
+        - If normal: draws until canPlay(c) or hand.length >= 25.
+        """
+        p = self.current_player
+        if p["id"] != player_id:
             return {"success": False, "error": "Not your turn."}
 
-        if self.pending_action:
-            return {"success": False, "error": f"Waiting for action: {self.pending_action}."}
-
-        # Case 1: Taking penalty stack
-        if self.pending_penalty > 0:
-            penalty_count = self.pending_penalty
-            drawn_cards = self._draw_cards_to_player(player, penalty_count)
-
-            self._log_event(
-                "penalty_drawn",
-                f"💥 {player['name']} suffered the penalty and drew {len(drawn_cards)} cards!",
-                {"drawn_count": len(drawn_cards), "player_id": player_id}
-            )
-
+        pen = self.pending_penalty > 0
+        if pen:
+            drawn_count = self.pending_penalty
+            for _ in range(drawn_count):
+                c = self._draw_card_from_deck()
+                if not c:
+                    break
+                p["hand"].append(c)
             self.pending_penalty = 0
-            self.pending_penalty_value = 0
-            self.last_penalty_source_id = None
+            self._log(f"{p['name']} drew {drawn_count} (penalty).")
+        else:
+            n = 0
+            while True:
+                c = self._draw_card_from_deck()
+                if not c:
+                    break
+                p["hand"].append(c)
+                n += 1
+                if self.can_play_card(player_id, c)[0] or len(p["hand"]) >= MERCY_CARD_LIMIT:
+                    break
+            self._log(f"{p['name']} drew {n} card(s).")
 
-            if not player["is_eliminated"]:
-                self._advance_turn()
+        if self._check_mercy():
+            return {"success": True, "game_over": True, "winner": self.winner}
 
-            self._check_victory()
-            return {
-                "success": True,
-                "type": "penalty_drawn",
-                "drawn_count": len(drawn_cards),
-                "eliminated": player["is_eliminated"]
-            }
+        has_playable = any(self.can_play_card(player_id, c)[0] for c in p["hand"])
 
-        # Case 2: Normal Turn - Draw until playable
-        drawn_cards: List[Card] = []
-        playable_card: Optional[Card] = None
+        # If took penalty or eliminated or no playable move, turn ends
+        if pen or p["is_eliminated"] or not has_playable:
+            self._advance_turn(skip=0)
+            return {"success": True, "turn_ended": True}
 
-        while not player["is_eliminated"]:
-            self._reshuffle_if_needed(1)
-            if not self.draw_pile:
-                break
+        # Normal draw yielded a playable card: turn remains active so they can play it!
+        return {"success": True, "turn_ended": False}
 
-            card = self.draw_pile.pop()
-            player["hand"].append(card)
-            drawn_cards.append(card)
+    # ---------------- BOT AI (MATCHING UNO No Mercy.html) ---------------- #
 
-            if len(player["hand"]) >= MERCY_CARD_LIMIT:
-                self._eliminate_player(player, reason=f"Mercy Rule ({len(player['hand'])} cards)")
-                break
-
-            can_play, _ = self.can_play_card(player_id, card)
-            if can_play:
-                playable_card = card
-                break
-
-        if player["is_eliminated"]:
-            self._check_victory()
-            return {
-                "success": True,
-                "type": "eliminated",
-                "drawn_count": len(drawn_cards),
-                "eliminated": True
-            }
-
-        self._log_event(
-            "cards_drawn",
-            f"{player['name']} drew {len(drawn_cards)} card(s) until finding a playable move.",
-            {"drawn_count": len(drawn_cards), "playable_card": playable_card.to_dict() if playable_card else None}
-        )
-
-        return {
-            "success": True,
-            "type": "normal_draw",
-            "drawn_count": len(drawn_cards),
-            "playable_card": playable_card.to_dict() if playable_card else None
-        }
-
-    # ---------------- AI BOT LOGIC ---------------- #
-
-    def _bot_pick_best_color(self, bot_player: Dict[str, Any]) -> str:
-        color_counts = Counter(c.color for c in bot_player["hand"] if c.color in COLORS)
-        if color_counts:
-            return color_counts.most_common(1)[0][0]
-        return random.choice(COLORS)
+    def _bot_color(self, bot_player: Dict[str, Any]) -> str:
+        counts = {c: 0 for c in COLOR_CODES}
+        for c in bot_player["hand"]:
+            if c.color != "W" and c.color in counts:
+                counts[c.color] += 1
+        m = max(counts.values()) if counts else 0
+        best = [k for k, v in counts.items() if v == m]
+        return random.choice(best) if best else random.choice(COLOR_CODES)
 
     def execute_bot_turn_if_needed(self) -> Optional[Dict[str, Any]]:
         """
-        Executes a turn for the current player if they are an AI bot.
-        Returns the result dict or None if human turn or game over.
+        Exact botMove scoring function from UNO No Mercy.html:
+        const sc = c => {
+          let s = Math.random(), v = dv(c);
+          if (v) s += nx <= 4 ? 3 + v / 10 : (G.pend ? 4 : .3);
+          if (c.type === 'skipall') s += 1.5;
+          if (c.type === 'discard') s += 1 + p.hand.filter(x => x.color === c.color).length * .5;
+          if (c.type === 'roul') s += .8;
+          if (c.type === '7') s += p.hand.length > minO ? 1.5 : -3;
+          if (c.color === 'W') s -= 1;
+          return s;
+        };
         """
-        if self.game_over:
+        if self.game_over or self.pending_action:
             return None
 
         curr = self.current_player
@@ -623,129 +470,101 @@ class UnoNoMercyGame:
             return None
 
         bot_id = curr["id"]
+        valid_cards = [c for c in curr["hand"] if self.can_play_card(bot_id, c)[0]]
 
-        # 1. Penalty stack mode
-        if self.pending_penalty > 0:
-            stack_cards = [
-                c for c in curr["hand"]
-                if c.is_draw_card and c.penalty >= self.pending_penalty_value
-            ]
-            if stack_cards:
-                # Play lowest qualifying stack card to conserve bigger cards
-                stack_cards.sort(key=lambda c: c.penalty)
-                chosen = stack_cards[0]
-                color = self._bot_pick_best_color(curr) if chosen.is_wild else None
-                return self.play_card(bot_id, chosen.id, chosen_color=color)
-            else:
-                return self.player_draw(bot_id)
-
-        # 2. Normal turn
-        valid_ids = self.get_valid_cards_for_player(bot_id)
-        if not valid_ids:
-            # Draw until playable
+        if not valid_cards:
             return self.player_draw(bot_id)
 
-        # Pick best card among valid
-        valid_cards = [c for c in curr["hand"] if c.id in valid_ids]
-        
-        # Prioritize Discard All, then +4/+2, then Action, then Wild, then number
-        def card_priority(c: Card):
-            if c.card_type == TYPE_DISCARD_ALL: return 10
-            if c.card_type == TYPE_WILD_DRAW_10: return 9
-            if c.card_type == TYPE_WILD_DRAW_6: return 8
-            if c.card_type == TYPE_DRAW_4: return 7
-            if c.card_type == TYPE_DRAW_2: return 6
-            if c.card_type == TYPE_SKIP_ALL: return 5
-            if c.card_type == TYPE_SKIP or c.card_type == TYPE_REVERSE: return 4
-            if c.is_wild: return 3
-            return 1
+        # Calculate opponent hand metrics
+        next_p = self.players[self._next_player_index(self.current_player_idx)]
+        nx = len(next_p["hand"])
 
-        valid_cards.sort(key=card_priority, reverse=True)
+        other_actives = [self.players[j] for j in self._get_active_indices() if self.players[j]["id"] != bot_id]
+        min_other = min(len(x["hand"]) for x in other_actives) if other_actives else 99
+        best_target = min(other_actives, key=lambda x: len(x["hand"]))["id"] if other_actives else None
+
+        def score(c: Card) -> float:
+            s = random.random()
+            v = c.draw_val
+            if v > 0:
+                s += (3 + v / 10.0) if nx <= 4 else (4.0 if self.pending_penalty > 0 else 0.3)
+            if c.card_type == TYPE_SKIPALL:
+                s += 1.5
+            if c.card_type == TYPE_DISCARD:
+                s += 1.0 + len([x for x in curr["hand"] if x.color == c.color]) * 0.5
+            if c.card_type == TYPE_ROUL:
+                s += 0.8
+            if c.card_type == "7":
+                s += 1.5 if len(curr["hand"]) > min_other else -3.0
+            if c.color == "W":
+                s -= 1.0
+            return s
+
+        valid_cards.sort(key=score, reverse=True)
         chosen = valid_cards[0]
-        chosen_color = self._bot_pick_best_color(curr) if chosen.is_wild else None
+        chosen_col = self._bot_color(curr) if chosen.color == "W" else None
+        target_id = best_target if chosen.card_type == "7" else None
 
-        target_id = None
-        if chosen.card_type == TYPE_NUMBER and str(chosen.value) == "7":
-            active_opponents = [p for p in self._get_active_players() if p["id"] != bot_id]
-            if active_opponents:
-                target_id = min(active_opponents, key=lambda p: len(p["hand"]))["id"]
+        return self.play_card(bot_id, chosen.id, chosen_color=chosen_col, target_player_id=target_id)
 
-        return self.play_card(bot_id, chosen.id, chosen_color=chosen_color, target_player_id=target_id)
-
-    def call_uno(self, player_id: str) -> Dict[str, Any]:
-        player = next((p for p in self.players if p["id"] == player_id), None)
-        if not player or player["is_eliminated"]:
-            return {"success": False, "error": "Player not found or eliminated."}
-
-        player["called_uno"] = True
-        self._log_event("called_uno", f"🗣️ {player['name']} shouted UNO!", {"player_id": player_id})
-        return {"success": True, "message": f"{player['name']} called UNO!"}
-
-    def catch_uno_failure(self, caller_id: str, target_id: str) -> Dict[str, Any]:
-        caller = next((p for p in self.players if p["id"] == caller_id), None)
-        target = next((p for p in self.players if p["id"] == target_id), None)
-
-        if not caller or not target or target["is_eliminated"]:
-            return {"success": False, "error": "Invalid players."}
-
-        if len(target["hand"]) == 1 and not target["called_uno"]:
-            drawn = self._draw_cards_to_player(target, 2)
-            self._log_event(
-                "uno_caught",
-                f"🚨 {caller['name']} caught {target['name']} forgetting UNO! +2 penalty cards!",
-                {"target_id": target_id, "caller_id": caller_id}
-            )
-            return {"success": True, "message": f"{target['name']} drew 2 penalty cards!"}
-
-        return {"success": False, "error": f"{target['name']} cannot be penalized."}
-
-    def resolve_action(self, player_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def resolve_action(self, player_id: str, payload: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
         if not self.pending_action or self.action_player_id != player_id:
             return {"success": False, "error": "No pending action for you."}
 
+        merged = {}
+        if payload and isinstance(payload, dict):
+            merged.update(payload)
+        merged.update(kwargs)
+        if "target_id" in merged and "target_player_id" not in merged:
+            merged["target_player_id"] = merged["target_id"]
+
+        action_type = self.pending_action
         card_id = self.action_context.get("card_id")
 
-        if self.pending_action == "choose_color":
-            chosen_color = payload.get("color")
-            if chosen_color not in COLORS:
+        if action_type == "color":
+            col = merged.get("color")
+            if col not in COLOR_CODES:
                 return {"success": False, "error": "Invalid color."}
-            return self.play_card(player_id, card_id, chosen_color=chosen_color)
+            self.pending_action = None
+            self.action_player_id = None
+            self.action_context = {}
+            return self.play_card(player_id, card_id, chosen_color=col)
 
-        elif self.pending_action == "swap_hand":
-            target_id = payload.get("target_player_id")
-            chosen_color = self.action_context.get("chosen_color")
-            return self.play_card(player_id, card_id, chosen_color=chosen_color, target_player_id=target_id)
+        elif action_type == "target":
+            target_id = merged.get("target_player_id")
+            chosen_col = self.action_context.get("chosen_color")
+            self.pending_action = None
+            self.action_player_id = None
+            self.action_context = {}
+            return self.play_card(player_id, card_id, chosen_color=chosen_col, target_player_id=target_id)
 
-        elif self.pending_action == "choose_roulette_color":
-            chosen_color = payload.get("color")
-            if chosen_color not in COLORS:
+        elif action_type == "roul":
+            col = merged.get("color")
+            if col not in COLOR_CODES:
                 return {"success": False, "error": "Invalid color."}
-            return self.play_card(player_id, card_id, chosen_color=chosen_color)
+            return self.resolve_roulette(col)
 
-        return {"success": False, "error": "Unknown pending action."}
+        return {"success": False, "error": "Unknown action."}
 
     def get_player_view(self, player_id: str) -> Dict[str, Any]:
-        player = next((p for p in self.players if p["id"] == player_id), None)
-        valid_card_ids = self.get_valid_cards_for_player(player_id) if player else []
+        p = next((x for x in self.players if x["id"] == player_id), None)
+        valid_ids = self.get_valid_cards_for_player(player_id) if p else []
 
         players_view = []
-        for p in self.players:
-            p_data = {
-                "id": p["id"],
-                "name": p["name"],
-                "avatar": p["avatar"],
-                "is_ai": p.get("is_ai", False),
-                "card_count": len(p["hand"]),
-                "is_eliminated": p["is_eliminated"],
-                "eliminated_reason": p["eliminated_reason"],
-                "called_uno": p["called_uno"],
-                "knockouts_caused": p["knockouts_caused"],
-                "is_current": (not self.game_over and self.players[self.current_player_idx]["id"] == p["id"]),
-                "is_danger": len(p["hand"]) >= (MERCY_CARD_LIMIT - 5)
-            }
-            players_view.append(p_data)
+        for pl in self.players:
+            players_view.append({
+                "id": pl["id"],
+                "name": pl["name"],
+                "avatar": pl["avatar"],
+                "is_ai": pl.get("is_ai", False),
+                "card_count": len(pl["hand"]),
+                "is_eliminated": pl["is_eliminated"],
+                "eliminated_reason": pl["eliminated_reason"],
+                "is_current": (not self.game_over and self.players[self.current_player_idx]["id"] == pl["id"]),
+                "is_danger": len(pl["hand"]) >= (MERCY_CARD_LIMIT - 5)
+            })
 
-        own_hand = [c.to_dict() for c in player["hand"]] if player else []
+        own_hand = [c.to_dict() for c in p["hand"]] if p else []
 
         return {
             "room_code": self.room_code,
@@ -758,7 +577,6 @@ class UnoNoMercyGame:
             "draw_pile_count": len(self.draw_pile),
             "discard_pile_count": len(self.discard_pile),
             "pending_penalty": self.pending_penalty,
-            "pending_penalty_value": self.pending_penalty_value,
             "pending_action": self.pending_action if self.action_player_id == player_id else None,
             "action_context": self.action_context if self.action_player_id == player_id else {},
             "game_over": self.game_over,
@@ -767,8 +585,14 @@ class UnoNoMercyGame:
             "mercy_limit": MERCY_CARD_LIMIT,
             "players": players_view,
             "my_hand": own_hand,
-            "my_valid_cards": valid_card_ids,
-            "can_draw": (player and not player["is_eliminated"] and self.current_player["id"] == player_id and not self.pending_action),
-            "can_call_uno": (player and not player["is_eliminated"] and len(player["hand"]) <= 2 and not player["called_uno"]),
+            "my_valid_cards": valid_ids,
+            "can_draw": (p and not p["is_eliminated"] and self.current_player["id"] == player_id and not self.pending_action),
             "recent_events": self.event_log[-8:]
         }
+
+    get_state_for_player = get_player_view
+
+
+
+GameEngine = UnoNoMercyGame
+

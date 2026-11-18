@@ -370,7 +370,7 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                             asyncio.create_task(handle_ai_turns_in_background(room, room_code))
 
             # 6. Draw Cards
-            elif msg_type == "draw" or msg_type == "drawCard":
+            elif msg_type in ("draw", "drawCard", "draw_card"):
                 if not room.game:
                     continue
 
