@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNO Show 'Em No Mercy — Multiplayer</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- App Header -->
+    <header class="app-header">
+        <div class="logo-container">
+            <span class="logo-badge">UNO</span>
+            <span class="logo-text">NO MERCY</span>
+        </div>
+        <div class="header-user-info">
+            <div id="userBadge" class="user-badge" style="display: none;">
+                <span id="userAvatarDisplay" class="user-avatar">🦊</span>
+                <span id="userNameDisplay" class="user-name">Player</span>
+            </div>
+            <button id="soundToggleBtn" class="btn-icon" title="Toggle Sound">🔊</button>
+            <button id="chatToggleBtn" class="btn-icon" title="Toggle Chat">💬</button>
+        </div>
+    </header>
+
+    <!-- App Main Views -->
+    <main class="views-container">
+
+        <!-- 1. Lobby View -->
+        <section id="lobbyView" class="view-section active">
+            <div class="lobby-layout">
+                
+                <!-- Create Room Panel -->
+                <div class="card-panel">
+                    <h2 class="panel-title">🔥 Create Room</h2>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Your Name</label>
+                        <input id="hostNameInput" type="text" class="form-input" placeholder="e.g. Maverick" maxlength="20">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Select Avatar</label>
+                        <div class="avatar-selector">
+                            <div class="avatar-opt selected" data-avatar="avatar1">🦊</div>
+                            <div class="avatar-opt" data-avatar="avatar2">🐺</div>
+                            <div class="avatar-opt" data-avatar="avatar3">🦁</div>
+                            <div class="avatar-opt" data-avatar="avatar4">🐯</div>
+                            <div class="avatar-opt" data-avatar="avatar5">🐉</div>
+                            <div class="avatar-opt" data-avatar="avatar6">🤖</div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Max Players (2 to 6)</label>
+                        <div class="player-limit-selector">
+                            <button type="button" class="limit-btn" data-limit="2">2</button>
+                            <button type="button" class="limit-btn" data-limit="3">3</button>
+                            <button type="button" class="limit-btn" data-limit="4">4</button>
+                            <button type="button" class="limit-btn" data-limit="5">5</button>
+                            <button type="button" class="limit-btn active" data-limit="6">6</button>
+                        </div>
+                    </div>
+
+                    <button id="createRoomBtn" class="btn-primary">🔥 Create Room</button>
+                </div>
+
+                <!-- Join Room Panel -->
+                <div class="card-panel">
+                    <h2 class="panel-title">🚪 Join Room</h2>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Room Code (6 Digits)</label>
+                        <input id="joinCodeInput" type="text" class="form-input" placeholder="e.g. AB12CD" maxlength="6" style="text-transform: uppercase; letter-spacing: 2px;">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Your Name</label>
+                        <input id="joinNameInput" type="text" class="form-input" placeholder="e.g. Phoenix" maxlength="20">
+                    </div>
+
+                    <button id="joinRoomBtn" class="btn-primary">Join Room</button>
+
+                    <hr style="border-color: var(--border-color); margin: 10px 0;">
+
+                    <h3 style="font-size: 1rem; color: var(--text-secondary);">Active Public Rooms</h3>
+                    <div id="activeRoomsList" style="display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto;">
+                        <div class="room-list-empty">Scanning for rooms...</div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- 2. Waiting Room View -->
+        <section id="waitingView" class="view-section">
+            <div class="room-waiting-container">
+                <div class="room-header-card">
+                    <div>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px;">Room Code</div>
+                        <div class="room-code-display">
+                            <span id="waitingRoomCode" class="room-code-text">------</span>
+                            <button id="copyRoomCodeBtn" class="btn-secondary">📋 Copy Code</button>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+                        <button id="toggleReadyBtn" class="btn-primary" style="display: none;">✅ Ready Up</button>
+                        <button id="startGameBtn" class="btn-primary" style="display: none;" disabled>🔥 Start Match</button>
+                    </div>
+                </div>
+
+                <div id="waitingSeatsGrid" class="seats-grid">
+                    <!-- Seats dynamically populated -->
+                </div>
+            </div>
+        </section>
+
+        <!-- 3. Game Table View -->
+        <section id="gameView" class="view-section">
+            <div class="game-view-container">
+
+                <!-- Top Game Bar -->
+                <div class="game-top-bar">
+                    <div class="turn-status-banner">
+                        <span id="turnStatusPill" class="turn-pill">Waiting...</span>
+                    </div>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+                        <span style="font-size: 0.85rem; color: var(--text-secondary);">Mercy Limit: <strong>25 Cards</strong></span>
+                    </div>
+                </div>
+
+                <!-- Animated Penalty Stack Flame Banner -->
+                <div id="penaltyStackBanner" class="penalty-stack-banner">
+                    🔥 PENALTY STACK: <span id="penaltyValueText">+4</span>! STACK OR TAKE THE HIT! 🔥
+                </div>
+
+                <!-- Arena Felt Table -->
+                <div id="tableArena" class="table-arena">
+                    <!-- Opponents Orbit Container -->
+                    <div id="opponentsContainer"></div>
+
+                    <!-- Table Center -->
+                    <div class="table-felt">
+                        <!-- Play Direction Indicator (rotating dashed circle with arrows) -->
+                        <div id="directionIndicator" class="direction-indicator">
+                            <span class="direction-arrow top">▲</span>
+                            <span class="direction-arrow right">▶</span>
+                            <span class="direction-arrow bottom">▼</span>
+                            <span class="direction-arrow left">◀</span>
+                        </div>
+
+                        <!-- Center Piles -->
+                        <div class="center-piles">
+                            <!-- Draw Pile -->
+                            <div class="deck-pile-container" title="Click to Draw">
+                                <div id="deckCardElement" class="deck-card">
+                                    <div class="deck-logo">UNO</div>
+                                </div>
+                                <span id="drawPileCount" style="font-size: 0.75rem; font-weight: 700; color: var(--text-secondary);">168 Cards</span>
+                            </div>
+
+                            <!-- Discard Pile -->
+                            <div class="discard-pile-container">
+                                <div id="topDiscardCard" class="uno-card color-red">
+                                    <span class="card-corner-symbol top-left">7</span>
+                                    <div class="card-oval">
+                                        <span class="card-main-symbol">7</span>
+                                    </div>
+                                    <span class="card-corner-symbol bottom-right">7</span>
+                                </div>
+                                <div id="activeColorBadge" class="active-color-badge" style="background: #ff2a5f;">RED</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Event Feed ticker -->
+                    <div id="eventFeedBox" class="event-feed-box"></div>
+                </div>
+
+                <!-- Player Hand Bottom Rack -->
+                <div class="player-hand-rack">
+                    <div class="player-action-controls">
+                        <button id="unoCallBtn" class="uno-call-btn" disabled>🗣️ SHOUT UNO!</button>
+                    </div>
+
+                    <div class="cards-carousel">
+                        <div id="cardsFan" class="cards-fan">
+                            <!-- Player cards populated dynamically -->
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Modals -->
+
+    <!-- Wild Color Picker Modal -->
+    <div id="colorPickerModal" class="modal-overlay">
+        <div class="modal-card">
+            <h2 style="font-size: 1.4rem; font-weight: 900;">Choose Wild Color</h2>
+            <div class="color-picker-grid">
+                <button class="color-opt-btn opt-red" data-color="red">RED</button>
+                <button class="color-opt-btn opt-yellow" data-color="yellow">YELLOW</button>
+                <button class="color-opt-btn opt-green" data-color="green">GREEN</button>
+                <button class="color-opt-btn opt-blue" data-color="blue">BLUE</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 7 Hand Swap Modal -->
+    <div id="swapHandModal" class="modal-overlay">
+        <div class="modal-card">
+            <h2 style="font-size: 1.4rem; font-weight: 900;">🤝 Swap Hands With:</h2>
+            <div id="swapTargetsList" class="player-targets-list"></div>
+        </div>
+    </div>
+
+    <!-- Victory Modal -->
+    <div id="victoryModal" class="modal-overlay">
+        <div class="modal-card" style="text-align: center;">
+            <div style="font-size: 3.5rem;">🏆</div>
+            <h2 style="font-size: 1.8rem; font-weight: 900; color: var(--accent-yellow);">MATCH COMPLETE!</h2>
+            <div style="font-size: 1.2rem; font-weight: 700; margin: 10px 0;">
+                Winner: <span id="winnerNameText" style="color: #00e676;">Player</span>
+            </div>
+            <div id="winReasonText" style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 20px;">
+                Emptied Hand
+            </div>
+            <button id="returnLobbyBtn" class="btn-primary" style="width: 100%;">Return to Lobby</button>
+        </div>
+    </div>
+
+    <!-- Chat Drawer -->
+    <div id="chatDrawer" class="chat-drawer">
+        <div class="chat-header">
+            <span>Room Chat & Reactions</span>
+            <button id="closeChatBtn" class="btn-icon" style="font-size: 1rem;">✕</button>
+        </div>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div class="emote-bar">
+            <button class="emote-btn" title="Fire">🔥</button>
+            <button class="emote-btn" title="Skull">💀</button>
+            <button class="emote-btn" title="Devil">😈</button>
+            <button class="emote-btn" title="Clown">🤡</button>
+            <button class="emote-btn" title="Alarm">🚨</button>
+            <button class="emote-btn" title="Clap">👏</button>
+        </div>
+        <div class="chat-input-bar">
+            <input id="chatInput" type="text" class="form-input" placeholder="Type a message..." style="flex: 1; padding: 8px 12px; font-size: 0.85rem;">
+            <button id="sendChatBtn" class="btn-primary" style="padding: 8px 14px; font-size: 0.85rem;">Send</button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/static/js/sound.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/game.js"></script>
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
+
