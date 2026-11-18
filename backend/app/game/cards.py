@@ -4,33 +4,33 @@ from typing import List, Dict, Any, Optional
 
 COLORS = ["red", "yellow", "green", "blue"]
 
-# Card type constants
+# Action types matching asset names
 TYPE_NUMBER = "number"
 TYPE_SKIP = "skip"
-TYPE_SKIP_EVERYONE = "skip_everyone"
+TYPE_SKIP_ALL = "skip_all"
 TYPE_REVERSE = "reverse"
-TYPE_DRAW_2 = "draw_2"
-TYPE_DRAW_4 = "draw_4"
+TYPE_DRAW_2 = "draw2"
+TYPE_DRAW_4 = "draw4"
 TYPE_DISCARD_ALL = "discard_all"
-TYPE_WILD_ROULETTE = "wild_roulette"
-TYPE_WILD_REVERSE_DRAW_4 = "wild_reverse_draw_4"
-TYPE_WILD_DRAW_6 = "wild_draw_6"
-TYPE_WILD_DRAW_10 = "wild_draw_10"
+TYPE_WILD_ROULETTE = "roulette"
+TYPE_WILD_REVERSE_DRAW_4 = "draw4"  # wild_draw4 is reverse +4 in No Mercy
+TYPE_WILD_DRAW_6 = "draw6"
+TYPE_WILD_DRAW_10 = "draw10"
 
 class Card:
     def __init__(
         self,
         card_id: str,
-        color: str,
+        color: str,  # "red", "yellow", "green", "blue", or "wild"
         card_type: str,
-        value: Optional[int] = None,
+        value: Optional[str] = None,  # "0" to "9" or action name
         penalty: int = 0
     ):
         self.id = card_id
-        self.color = color  # "red", "yellow", "green", "blue", or "wild"
+        self.color = color
         self.card_type = card_type
-        self.value = value  # 0-9 for number cards, None for others
-        self.penalty = penalty  # 2, 4, 6, 10 for draw cards
+        self.value = value
+        self.penalty = penalty
 
     @property
     def is_wild(self) -> bool:
@@ -41,12 +41,18 @@ class Card:
         return self.penalty > 0
 
     @property
+    def image_url(self) -> str:
+        if self.is_wild:
+            return f"/static/cards/wild_{self.value}.webp"
+        return f"/static/cards/{self.color}_{self.value}.webp"
+
+    @property
     def display_name(self) -> str:
         if self.card_type == TYPE_NUMBER:
             return f"{self.color.capitalize()} {self.value}"
         elif self.card_type == TYPE_SKIP:
             return f"{self.color.capitalize()} Skip"
-        elif self.card_type == TYPE_SKIP_EVERYONE:
+        elif self.card_type == TYPE_SKIP_ALL:
             return f"{self.color.capitalize()} Skip Everyone"
         elif self.card_type == TYPE_REVERSE:
             return f"{self.color.capitalize()} Reverse"
@@ -74,7 +80,8 @@ class Card:
             "value": self.value,
             "penalty": self.penalty,
             "display_name": self.display_name,
-            "is_wild": self.is_wild
+            "is_wild": self.is_wild,
+            "image_url": self.image_url
         }
 
     @classmethod
@@ -90,7 +97,7 @@ class Card:
 
 def build_no_mercy_deck() -> List[Card]:
     """
-    Builds the official 168-card UNO Show 'Em No Mercy deck.
+    Builds the official 168-card UNO Show 'Em No Mercy deck matching unonomercy.in assets.
     """
     deck: List[Card] = []
 
@@ -102,7 +109,7 @@ def build_no_mercy_deck() -> List[Card]:
                     card_id=f"{color}_{num}_{i+1}_{uuid.uuid4().hex[:6]}",
                     color=color,
                     card_type=TYPE_NUMBER,
-                    value=num
+                    value=str(num)
                 ))
 
     # 2. Action Colored Cards
@@ -112,15 +119,17 @@ def build_no_mercy_deck() -> List[Card]:
             deck.append(Card(
                 card_id=f"{color}_skip_{i+1}_{uuid.uuid4().hex[:6]}",
                 color=color,
-                card_type=TYPE_SKIP
+                card_type=TYPE_SKIP,
+                value="skip"
             ))
 
-        # Skip Everyone: 2 per color (8 cards)
+        # Skip Everyone (skip_all): 2 per color (8 cards)
         for i in range(2):
             deck.append(Card(
-                card_id=f"{color}_skip_everyone_{i+1}_{uuid.uuid4().hex[:6]}",
+                card_id=f"{color}_skip_all_{i+1}_{uuid.uuid4().hex[:6]}",
                 color=color,
-                card_type=TYPE_SKIP_EVERYONE
+                card_type=TYPE_SKIP_ALL,
+                value="skip_all"
             ))
 
         # Reverse: 3 per color (12 cards)
@@ -128,7 +137,8 @@ def build_no_mercy_deck() -> List[Card]:
             deck.append(Card(
                 card_id=f"{color}_reverse_{i+1}_{uuid.uuid4().hex[:6]}",
                 color=color,
-                card_type=TYPE_REVERSE
+                card_type=TYPE_REVERSE,
+                value="reverse"
             ))
 
         # Draw 2 (+2): 3 per color (12 cards)
@@ -137,6 +147,7 @@ def build_no_mercy_deck() -> List[Card]:
                 card_id=f"{color}_draw2_{i+1}_{uuid.uuid4().hex[:6]}",
                 color=color,
                 card_type=TYPE_DRAW_2,
+                value="draw2",
                 penalty=2
             ))
 
@@ -146,6 +157,7 @@ def build_no_mercy_deck() -> List[Card]:
                 card_id=f"{color}_draw4_{i+1}_{uuid.uuid4().hex[:6]}",
                 color=color,
                 card_type=TYPE_DRAW_4,
+                value="draw4",
                 penalty=4
             ))
 
@@ -154,7 +166,8 @@ def build_no_mercy_deck() -> List[Card]:
             deck.append(Card(
                 card_id=f"{color}_discard_all_{i+1}_{uuid.uuid4().hex[:6]}",
                 color=color,
-                card_type=TYPE_DISCARD_ALL
+                card_type=TYPE_DISCARD_ALL,
+                value="discard_all"
             ))
 
     # 3. Wild Cards
@@ -163,15 +176,17 @@ def build_no_mercy_deck() -> List[Card]:
         deck.append(Card(
             card_id=f"wild_roulette_{i+1}_{uuid.uuid4().hex[:6]}",
             color="wild",
-            card_type=TYPE_WILD_ROULETTE
+            card_type=TYPE_WILD_ROULETTE,
+            value="roulette"
         ))
 
     # Wild Reverse Draw 4: 8 cards
     for i in range(8):
         deck.append(Card(
-            card_id=f"wild_reverse_draw4_{i+1}_{uuid.uuid4().hex[:6]}",
+            card_id=f"wild_draw4_{i+1}_{uuid.uuid4().hex[:6]}",
             color="wild",
             card_type=TYPE_WILD_REVERSE_DRAW_4,
+            value="draw4",
             penalty=4
         ))
 
@@ -181,6 +196,7 @@ def build_no_mercy_deck() -> List[Card]:
             card_id=f"wild_draw6_{i+1}_{uuid.uuid4().hex[:6]}",
             color="wild",
             card_type=TYPE_WILD_DRAW_6,
+            value="draw6",
             penalty=6
         ))
 
@@ -190,8 +206,8 @@ def build_no_mercy_deck() -> List[Card]:
             card_id=f"wild_draw10_{i+1}_{uuid.uuid4().hex[:6]}",
             color="wild",
             card_type=TYPE_WILD_DRAW_10,
+            value="draw10",
             penalty=10
         ))
 
     return deck
-

@@ -6,21 +6,25 @@ from backend.app.game.engine import UnoNoMercyGame
 from backend.app.config import MIN_PLAYERS, MAX_PLAYERS
 from backend.app.storage.state_store import state_store
 
+BOT_NAMES = ["Bot Nova", "Bot Rex", "Bot Shadow", "Bot Luna", "Bot Blaze", "Bot Viper"]
+
 class Room:
-    def __init__(self, code: str, host_id: str, host_name: str, avatar: str = "avatar1", max_players: int = 6):
+    def __init__(self, code: str, host_id: str, host_name: str, avatar: str = "avatar1", max_players: int = 6, is_solo: bool = False):
         self.code = code.upper()
         self.host_id = host_id
         self.host_name = host_name
         self.max_players = max(MIN_PLAYERS, min(MAX_PLAYERS, max_players))
         self.created_at = time.time()
-        self.status = "waiting"  # "waiting", "in_progress", "finished"
+        self.status = "waiting"
+        self.is_solo = is_solo
         self.players: List[Dict[str, Any]] = [
             {
                 "id": host_id,
                 "name": host_name,
                 "avatar": avatar,
                 "is_host": True,
-                "is_ready": True,  # Host is ready by default
+                "is_ready": True,
+                "is_ai": False,
                 "connected": True
             }
         ]
@@ -34,6 +38,7 @@ class Room:
             "player_count": len(self.players),
             "max_players": self.max_players,
             "status": self.status,
+            "is_solo": self.is_solo,
             "created_at": self.created_at
         }
 
@@ -44,17 +49,18 @@ class Room:
             "host_name": self.host_name,
             "max_players": self.max_players,
             "status": self.status,
+            "is_solo": self.is_solo,
             "players": self.players,
             "can_start": self.can_start()[0],
+            "ai_count": sum(1 for p in self.players if p.get("is_ai")),
             "created_at": self.created_at,
             "chat_messages": self.chat_messages[-30:]
         }
 
-    def add_player(self, player_id: str, player_name: str, avatar: str = "avatar1") -> Dict[str, Any]:
+    def add_player(self, player_id: str, player_name: str, avatar: str = "avatar1", is_ai: bool = False) -> Dict[str, Any]:
         if self.status != "waiting":
             return {"success": False, "error": "Game is already in progress or completed."}
 
-        # Check if already joined (e.g. reconnecting)
         existing = next((p for p in self.players if p["id"] == player_id), None)
         if existing:
             existing["connected"] = True
@@ -65,9 +71,7 @@ class Room:
         if len(self.players) >= self.max_players:
             return {"success": False, "error": f"Room is full (max {self.max_players} players)."}
 
-        # Disallow duplicate names within room
         if any(p["name"].lower() == player_name.lower() for p in self.players):
-            # Append random suffix if name collision
             player_name = f"{player_name}_{secrets.randbelow(999)}"
 
         new_player = {
@@ -75,12 +79,38 @@ class Room:
             "name": player_name,
             "avatar": avatar,
             "is_host": False,
-            "is_ready": False,
+            "is_ready": is_ai,  # AI is ready immediately
+            "is_ai": is_ai,
             "connected": True
         }
         self.players.append(new_player)
         self.add_system_chat(f"👋 {player_name} joined the room.")
         return {"success": True, "player": new_player}
+
+    def add_ai_bot(self) -> Dict[str, Any]:
+        if len(self.players) >= self.max_players:
+            return {"success": False, "error": f"Room is full (max {self.max_players} players)."}
+
+        used_names = {p["name"] for p in self.players}
+        available_names = [n for n in BOT_NAMES if n not in used_names]
+        bot_name = available_names[0] if available_names else f"Bot {len(self.players)}"
+        bot_id = f"bot_{secrets.token_hex(4)}"
+
+        return self.add_player(bot_id, bot_name, avatar="avatar6", is_ai=True)
+
+    def remove_ai_bot(self, bot_id: Optional[str] = None) -> Dict[str, Any]:
+        if bot_id:
+            idx = next((i for i, p in enumerate(self.players) if p["id"] == bot_id and p.get("is_ai")), None)
+        else:
+            # remove last added bot
+            idx = next((i for i in range(len(self.players)-1, -1, -1) if self.players[i].get("is_ai")), None)
+
+        if idx is None:
+            return {"success": False, "error": "No AI bot to remove."}
+
+        removed = self.players.pop(idx)
+        self.add_system_chat(f"🤖 {removed['name']} was removed.")
+        return {"success": True, "remaining_players": len(self.players)}
 
     def remove_player(self, player_id: str) -> Dict[str, Any]:
         idx = next((i for i, p in enumerate(self.players) if p["id"] == player_id), None)
@@ -90,18 +120,18 @@ class Room:
         leaving_player = self.players.pop(idx)
         self.add_system_chat(f"🚪 {leaving_player['name']} left the room.")
 
-        # If game is in progress, eliminate player
         if self.game and not self.game.game_over:
             g_player = next((p for p in self.game.players if p["id"] == player_id), None)
             if g_player:
                 self.game._eliminate_player(g_player, reason="Abandoned Game")
 
-        # Reassign host if host left
         if leaving_player["is_host"] and self.players:
-            self.players[0]["is_host"] = True
-            self.players[0]["is_ready"] = True
-            self.host_id = self.players[0]["id"]
-            self.host_name = self.players[0]["name"]
+            # Transfer host to next human player if possible
+            next_human = next((p for p in self.players if not p.get("is_ai")), self.players[0])
+            next_human["is_host"] = True
+            next_human["is_ready"] = True
+            self.host_id = next_human["id"]
+            self.host_name = next_human["name"]
             self.add_system_chat(f"👑 {self.host_name} is now the host.")
 
         return {"success": True, "remaining_players": len(self.players)}
@@ -111,7 +141,7 @@ class Room:
         if not player:
             return {"success": False, "error": "Player not found."}
 
-        if player["is_host"]:
+        if player["is_host"] or player.get("is_ai"):
             player["is_ready"] = True
             return {"success": True, "is_ready": True}
 
@@ -136,16 +166,22 @@ class Room:
         self.status = "in_progress"
         self.game = UnoNoMercyGame(
             room_code=self.code,
-            players_info=[{"id": p["id"], "name": p["name"], "avatar": p["avatar"]} for p in self.players]
+            players_info=[{
+                "id": p["id"],
+                "name": p["name"],
+                "avatar": p["avatar"],
+                "is_ai": p.get("is_ai", False)
+            } for p in self.players]
         )
         self.add_system_chat("🔥 The match has begun! Show 'Em NO MERCY! 🔥")
         return {"success": True}
 
-    def add_chat(self, player_id: str, player_name: str, text: str):
+    def add_chat(self, player_id: str, player_name: str, text: str, is_emoji: bool = False):
         msg = {
             "sender_id": player_id,
             "sender_name": player_name,
             "text": text,
+            "is_emoji": is_emoji,
             "timestamp": time.time(),
             "is_system": False
         }
@@ -171,10 +207,10 @@ class Room:
 class RoomManager:
     def __init__(self):
         self.rooms: Dict[str, Room] = {}
+        self.matchmaking_queue: List[Dict[str, Any]] = []
 
     def _generate_unique_code(self) -> str:
         chars = string.ascii_uppercase + string.digits
-        # Avoid confusing characters like O, 0, I, 1
         filtered_chars = "".join([c for c in chars if c not in "OI01"])
         for _ in range(100):
             code = "".join(secrets.choice(filtered_chars) for _ in range(6))
@@ -182,9 +218,9 @@ class RoomManager:
                 return code
         return secrets.token_hex(3).upper()
 
-    async def create_room(self, host_id: str, host_name: str, avatar: str = "avatar1", max_players: int = 6) -> Room:
+    async def create_room(self, host_id: str, host_name: str, avatar: str = "avatar1", max_players: int = 6, is_solo: bool = False) -> Room:
         code = self._generate_unique_code()
-        room = Room(code=code, host_id=host_id, host_name=host_name, avatar=avatar, max_players=max_players)
+        room = Room(code=code, host_id=host_id, host_name=host_name, avatar=avatar, max_players=max_players, is_solo=is_solo)
         self.rooms[code] = room
         await state_store.save_room(code, room.to_dict())
         return room
@@ -203,7 +239,7 @@ class RoomManager:
         return [
             room.to_summary_dict()
             for room in self.rooms.values()
-            if room.status == "waiting" and len(room.players) < room.max_players
+            if room.status == "waiting" and not room.is_solo and len(room.players) < room.max_players
         ]
 
 room_manager = RoomManager()

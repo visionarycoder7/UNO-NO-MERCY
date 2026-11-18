@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import time
+import asyncio
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,6 @@ logger = logging.getLogger("uno.main")
 
 app = FastAPI(title="UNO Show 'Em No Mercy API")
 
-# Enable CORS for cross-origin or local development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,6 +28,58 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ----------------- Helper for AI Automation ----------------- #
+
+async def handle_ai_turns_in_background(room, room_code: str):
+    """
+    Executes automated turns with realistic thinking delays when current player is an AI bot.
+    """
+    while room.game and not room.game.game_over:
+        curr = room.game.current_player
+        if not curr.get("is_ai") or curr.get("is_eliminated"):
+            break
+
+        await asyncio.sleep(0.75)  # Natural thinking pause
+
+        if not room.game or room.game.game_over:
+            break
+
+        res = room.game.execute_bot_turn_if_needed()
+        if res:
+            await ws_manager.broadcast_game_state(room)
+
+            if room.game.game_over:
+                room.status = "finished"
+                duration = int(time.time() - room.game.start_time)
+                db = SessionLocal()
+                try:
+                    record_match_result(
+                        db=db,
+                        room_code=room.code,
+                        winner_name=room.game.winner["name"],
+                        total_players=len(room.players),
+                        win_reason=room.game.win_reason,
+                        duration_seconds=duration,
+                        player_stats=[{
+                            "name": p["name"],
+                            "knockouts_caused": p["knockouts_caused"],
+                            "is_eliminated": p["is_eliminated"]
+                        } for p in room.game.players]
+                    )
+                finally:
+                    db.close()
+
+                await ws_manager.broadcast_to_room(room_code, {
+                    "type": "game_over",
+                    "winner": room.game.winner,
+                    "win_reason": room.game.win_reason,
+                    "duration_seconds": duration
+                })
+                break
+        else:
+            break
+
 
 # ----------------- REST Endpoints ----------------- #
 
@@ -57,8 +109,30 @@ async def create_room(request: CreateRoomRequest):
         host_id=host_id,
         host_name=request.host_name.strip(),
         avatar=request.avatar,
-        max_players=request.max_players
+        max_players=request.max_players,
+        is_solo=False
     )
+    return {
+        "success": True,
+        "room_code": room.code,
+        "host_id": host_id,
+        "room": room.to_dict()
+    }
+
+@app.post("/api/rooms/solo")
+async def create_solo_room(request: CreateRoomRequest):
+    host_id = f"player_{uuid.uuid4().hex[:8]}"
+    room = await room_manager.create_room(
+        host_id=host_id,
+        host_name=request.host_name.strip(),
+        avatar=request.avatar,
+        max_players=4,
+        is_solo=True
+    )
+    # Pre-add 2 AI bots for immediate solo play
+    room.add_ai_bot()
+    room.add_ai_bot()
+
     return {
         "success": True,
         "room_code": room.code,
@@ -94,7 +168,6 @@ async def join_room(room_code: str, request: JoinRoomRequest):
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result.get("error", "Could not join room"))
 
-    # Notify room via WebSocket
     await ws_manager.broadcast_to_room(room.code, {
         "type": "room_update",
         "room": room.to_dict()
@@ -129,13 +202,11 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
     await ws_manager.connect(room_code, player_id, websocket)
 
     try:
-        # Send current room state on initial connection
         await ws_manager.send_to_player(room_code, player_id, {
             "type": "room_update",
             "room": room.to_dict()
         })
 
-        # If game is already active, send player's game view
         if room.game:
             await ws_manager.send_to_player(room_code, player_id, {
                 "type": "game_state",
@@ -151,7 +222,7 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
 
             msg_type = data.get("type")
 
-            # 1. Player Ready Toggle
+            # 1. Ready Toggle
             if msg_type == "ready":
                 result = room.toggle_ready(player_id)
                 await ws_manager.broadcast_to_room(room_code, {
@@ -159,8 +230,37 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                     "room": room.to_dict()
                 })
 
-            # 2. Host Starts Game
-            elif msg_type == "start_game":
+            # 2. Add / Remove AI Bots
+            elif msg_type == "add_ai" or msg_type == "addAI":
+                if player["is_host"] and room.status == "waiting":
+                    room.add_ai_bot()
+                    await ws_manager.broadcast_to_room(room_code, {
+                        "type": "room_update",
+                        "room": room.to_dict()
+                    })
+
+            elif msg_type == "remove_ai" or msg_type == "removeAI":
+                if player["is_host"] and room.status == "waiting":
+                    bot_id = data.get("aiId")
+                    room.remove_ai_bot(bot_id)
+                    await ws_manager.broadcast_to_room(room_code, {
+                        "type": "room_update",
+                        "room": room.to_dict()
+                    })
+
+            # 3. Kick Player
+            elif msg_type == "removePlayer":
+                if player["is_host"] and room.status == "waiting":
+                    target_id = data.get("targetId")
+                    if target_id and target_id != player_id:
+                        room.remove_player(target_id)
+                        await ws_manager.broadcast_to_room(room_code, {
+                            "type": "room_update",
+                            "room": room.to_dict()
+                        })
+
+            # 4. Host Starts Game
+            elif msg_type == "start_game" or msg_type == "startGame":
                 result = room.start_game(player_id)
                 if not result["success"]:
                     await ws_manager.send_to_player(room_code, player_id, {
@@ -174,8 +274,12 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                     })
                     await ws_manager.broadcast_game_state(room)
 
-            # 3. Play Card
-            elif msg_type == "play_card":
+                    # Trigger bot turn if first player is AI
+                    if room.game.current_player.get("is_ai"):
+                        asyncio.create_task(handle_ai_turns_in_background(room, room_code))
+
+            # 5. Play Card
+            elif msg_type == "play_card" or msg_type == "playCard":
                 if not room.game:
                     continue
 
@@ -196,7 +300,6 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                         "message": result.get("error", "Invalid move")
                     })
                 elif result.get("needs_action"):
-                    # Prompt player for selection (e.g. choose color, pick opponent for 7 swap)
                     await ws_manager.send_to_player(room_code, player_id, {
                         "type": "action_required",
                         "action": result["needs_action"],
@@ -206,11 +309,9 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                 else:
                     await ws_manager.broadcast_game_state(room)
 
-                    # Check for Game Over
                     if room.game.game_over:
                         room.status = "finished"
                         duration = int(time.time() - room.game.start_time)
-                        # Record in database
                         record_match_result(
                             db=db,
                             room_code=room.code,
@@ -230,9 +331,13 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                             "win_reason": room.game.win_reason,
                             "duration_seconds": duration
                         })
+                    else:
+                        # If next turn is AI, run AI turns in background
+                        if room.game.current_player.get("is_ai"):
+                            asyncio.create_task(handle_ai_turns_in_background(room, room_code))
 
-            # 4. Draw Cards / Take Penalty
-            elif msg_type == "draw":
+            # 6. Draw Cards
+            elif msg_type == "draw" or msg_type == "drawCard":
                 if not room.game:
                     continue
 
@@ -267,9 +372,12 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                             "win_reason": room.game.win_reason,
                             "duration_seconds": duration
                         })
+                    else:
+                        if room.game.current_player.get("is_ai"):
+                            asyncio.create_task(handle_ai_turns_in_background(room, room_code))
 
-            # 5. Resolve Action Choice (Color Picker / 7 Swap Hand Target / Roulette Color)
-            elif msg_type == "resolve_action":
+            # 7. Resolve Action (Color, 7 Swap, Roulette)
+            elif msg_type == "resolve_action" or msg_type == "rouletteColorChosen":
                 if not room.game:
                     continue
 
@@ -303,8 +411,11 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                             "win_reason": room.game.win_reason,
                             "duration_seconds": duration
                         })
+                    else:
+                        if room.game.current_player.get("is_ai"):
+                            asyncio.create_task(handle_ai_turns_in_background(room, room_code))
 
-            # 6. Call UNO
+            # 8. Call UNO
             elif msg_type == "call_uno":
                 if room.game:
                     result = room.game.call_uno(player_id)
@@ -315,7 +426,7 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                             "player_name": player["name"]
                         })
 
-            # 7. Catch UNO Failure
+            # 9. Catch UNO Failure
             elif msg_type == "catch_uno":
                 if room.game:
                     target_id = data.get("target_id")
@@ -323,23 +434,26 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
                     if result["success"]:
                         await ws_manager.broadcast_game_state(room)
 
-            # 8. Chat Message / Emote
-            elif msg_type == "chat":
-                text = data.get("message", "").strip()
+            # 10. Chat Message & Floating Emojis
+            elif msg_type == "chat" or msg_type == "chatEmoji":
+                emoji = data.get("emoji")
+                text = data.get("message", emoji or "").strip()
                 if text:
-                    msg = room.add_chat(player_id, player["name"], text)
+                    msg = room.add_chat(player_id, player["name"], text, is_emoji=bool(emoji))
                     await ws_manager.broadcast_to_room(room_code, {
                         "type": "chat_message",
-                        "message": msg
+                        "message": msg,
+                        "emoji": emoji,
+                        "sender_id": player_id
                     })
 
-            # 9. Rematch / Reset Game (Host only)
-            elif msg_type == "rematch":
+            # 11. Rematch / Reset Game
+            elif msg_type == "rematch" or msg_type == "playAgain":
                 if player["is_host"] and room.status == "finished":
                     room.status = "waiting"
                     room.game = None
                     for p in room.players:
-                        if not p["is_host"]:
+                        if not p["is_host"] and not p.get("is_ai"):
                             p["is_ready"] = False
                     await ws_manager.broadcast_to_room(room_code, {
                         "type": "room_update",
@@ -348,7 +462,6 @@ async def websocket_game(websocket: WebSocket, room_code: str, player_id: str):
 
     except WebSocketDisconnect:
         ws_manager.disconnect(room_code, player_id)
-        # Handle player leaving
         player["connected"] = False
         await ws_manager.broadcast_to_room(room_code, {
             "type": "player_disconnected",

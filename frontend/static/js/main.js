@@ -1,274 +1,295 @@
-// Application Coordinator for UNO Show 'Em No Mercy
+// Application Main Coordinator matching unonomercy.in flow
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Current user & room state
     let currentUser = null;
     let currentRoom = null;
     let myPlayerId = null;
     let ws = null;
     let gameRenderer = null;
 
-    // View Elements
-    const authView = document.getElementById('authView');
+    // View Sections
     const lobbyView = document.getElementById('lobbyView');
     const waitingView = document.getElementById('waitingView');
     const gameView = document.getElementById('gameView');
 
-    // Header Elements
-    const userBadge = document.getElementById('userBadge');
-    const userNameDisplay = document.getElementById('userNameDisplay');
-    const userAvatarDisplay = document.getElementById('userAvatarDisplay');
-    const soundToggleBtn = document.getElementById('soundToggleBtn');
-    const chatToggleBtn = document.getElementById('chatToggleBtn');
+    // Modals
+    const rulebookModal = document.getElementById('rulebookModal');
+    const victoryModal = document.getElementById('victoryModal');
+    const shareModal = document.getElementById('shareModal');
     const chatDrawer = document.getElementById('chatDrawer');
 
-    // Lobby Elements
-    const hostNameInput = document.getElementById('hostNameInput');
-    const joinCodeInput = document.getElementById('joinCodeInput');
-    const joinNameInput = document.getElementById('joinNameInput');
-    const createRoomBtn = document.getElementById('createRoomBtn');
-    const joinRoomBtn = document.getElementById('joinRoomBtn');
-    const activeRoomsList = document.getElementById('activeRoomsList');
+    // Header buttons
+    const rulebookBtn = document.getElementById('rulebookBtn');
+    const soundToggleBtn = document.getElementById('soundToggleBtn');
+    const chatToggleBtn = document.getElementById('chatToggleBtn');
+    const closeRulebookBtn = document.getElementById('closeRulebookBtn');
+    const closeChatBtn = document.getElementById('closeChatBtn');
+    const onlinePlayerCountEl = document.getElementById('onlinePlayerCountValue');
+
+    // Solo Mode Elements
+    const soloPlayBtn = document.getElementById('soloPlayBtn');
+    const soloPlayerName = document.getElementById('soloPlayerName');
+
+    // Friends Mode Elements
+    const friendsPlayerName = document.getElementById('friendsPlayerName');
+    const createFriendsRoomBtn = document.getElementById('createFriendsRoomBtn');
+    const joinRoomCodeInput = document.getElementById('joinRoomCodeInput');
+    const joinFriendsRoomBtn = document.getElementById('joinFriendsRoomBtn');
+
+    // Matchmaking Elements
+    const mmSearchBtn = document.getElementById('mmSearchBtn');
+    const mmPlayerName = document.getElementById('mmPlayerName');
 
     // Waiting Room Elements
     const waitingRoomCode = document.getElementById('waitingRoomCode');
-    const waitingSeatsGrid = document.getElementById('waitingSeatsGrid');
+    const waitingPlayerCount = document.getElementById('waitingPlayerCount');
+    const waitingSlotsGrid = document.getElementById('waitingSlotsGrid');
+    const addAiBtn = document.getElementById('addAiBtn');
+    const removeAiBtn = document.getElementById('removeAiBtn');
     const toggleReadyBtn = document.getElementById('toggleReadyBtn');
     const startGameBtn = document.getElementById('startGameBtn');
-    const copyRoomCodeBtn = document.getElementById('copyRoomCodeBtn');
+    const shareRoomBtn = document.getElementById('shareRoomBtn');
+    const leaveLobbyBtn = document.getElementById('leaveLobbyBtn');
 
     // Chat Elements
     const chatMessagesEl = document.getElementById('chatMessages');
     const chatInput = document.getElementById('chatInput');
     const sendChatBtn = document.getElementById('sendChatBtn');
-    const closeChatBtn = document.getElementById('closeChatBtn');
 
-    // Victory Modal Elements
-    const victoryModal = document.getElementById('victoryModal');
+    // Victory Screen
     const winnerNameEl = document.getElementById('winnerNameText');
     const winReasonEl = document.getElementById('winReasonText');
+    const rematchBtn = document.getElementById('rematchBtn');
     const returnLobbyBtn = document.getElementById('returnLobbyBtn');
 
-    let selectedMaxPlayers = 6;
-    let selectedAvatar = 'avatar1';
+    // Simulated online players counter with realistic fluctuation
+    function updateOnlineCount() {
+        if (onlinePlayerCountEl) {
+            const base = 1420;
+            const variance = Math.floor(Math.sin(Date.now() / 10000) * 80) + Math.floor(Math.random() * 15);
+            onlinePlayerCountEl.textContent = (base + variance).toLocaleString();
+        }
+    }
+    updateOnlineCount();
+    setInterval(updateOnlineCount, 8000);
 
-    // ---------------- Switch View Helper ---------------- //
     function switchView(viewName) {
-        document.querySelectorAll('.view-section').forEach(sec => sec.classList.remove('active'));
+        [lobbyView, waitingView, gameView].forEach(v => v.classList.remove('active'));
         if (viewName === 'lobby') lobbyView.classList.add('active');
         if (viewName === 'waiting') waitingView.classList.add('active');
         if (viewName === 'game') gameView.classList.add('active');
     }
 
-    // ---------------- Avatar & Player Limits ---------------- //
-    document.querySelectorAll('.avatar-opt').forEach(opt => {
-        opt.addEventListener('click', (e) => {
-            document.querySelectorAll('.avatar-opt').forEach(o => o.classList.remove('selected'));
-            e.currentTarget.classList.add('selected');
-            selectedAvatar = e.currentTarget.getAttribute('data-avatar');
-        });
-    });
-
-    document.querySelectorAll('.limit-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('.limit-btn').forEach(b => b.classList.remove('active'));
-            e.currentTarget.classList.add('active');
-            selectedMaxPlayers = parseInt(e.currentTarget.getAttribute('data-limit'), 10);
-        });
-    });
+    // Modal toggles
+    if (rulebookBtn) rulebookBtn.onclick = () => rulebookModal.classList.add('active');
+    if (closeRulebookBtn) closeRulebookBtn.onclick = () => rulebookModal.classList.remove('active');
+    if (chatToggleBtn) chatToggleBtn.onclick = () => chatDrawer.classList.toggle('active');
+    if (closeChatBtn) closeChatBtn.onclick = () => chatDrawer.classList.remove('active');
 
     // Sound toggle
-    soundToggleBtn.addEventListener('click', () => {
+    soundToggleBtn.onclick = () => {
         const enabled = window.sounds.toggle();
         soundToggleBtn.textContent = enabled ? '🔊' : '🔇';
-    });
+    };
 
-    // Chat drawer toggle
-    chatToggleBtn.addEventListener('click', () => {
-        chatDrawer.classList.toggle('active');
-    });
-    if (closeChatBtn) {
-        closeChatBtn.addEventListener('click', () => {
-            chatDrawer.classList.remove('active');
-        });
-    }
-
-    // Quick emotes
-    document.querySelectorAll('.emote-btn').forEach(btn => {
+    // Quick emoji reactions
+    document.querySelectorAll('.quick-emoji-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            const emote = e.currentTarget.textContent;
-            sendChatMessage(emote);
+            const emoji = e.currentTarget.textContent;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'chatEmoji', emoji: emoji }));
+            }
         });
     });
 
-    // Send Chat
-    function sendChatMessage(text) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const msg = text || chatInput.value.trim();
-        if (!msg) return;
-        ws.send(JSON.stringify({ type: 'chat', message: msg }));
+    // Chat send
+    function sendChat() {
+        const text = chatInput.value.trim();
+        if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'chat', message: text }));
         chatInput.value = '';
     }
+    sendChatBtn.onclick = sendChat;
+    chatInput.onkeydown = (e) => { if (e.key === 'Enter') sendChat(); };
 
-    sendChatBtn.addEventListener('click', () => sendChatMessage());
-    chatInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') sendChatMessage();
-    });
-
-    // ---------------- Create Room ---------------- //
-    createRoomBtn.addEventListener('click', async () => {
-        const hostName = hostNameInput.value.trim();
-        if (!hostName) {
-            alert('Please enter your name.');
-            return;
-        }
-
+    // ---------------- 1. SOLO MODE (PLAY WITH BOTS) ---------------- //
+    soloPlayBtn.addEventListener('click', async () => {
+        const name = soloPlayerName.value.trim() || 'Player';
         try {
-            createRoomBtn.disabled = true;
-            createRoomBtn.textContent = 'Creating...';
+            soloPlayBtn.disabled = true;
+            soloPlayBtn.textContent = 'Launching...';
 
-            const res = await window.API.createRoom(hostName, selectedAvatar, selectedMaxPlayers);
+            const res = await window.API.request('/api/rooms/solo', {
+                method: 'POST',
+                body: { host_name: name, avatar: 'avatar1', max_players: 4 }
+            });
+
             myPlayerId = res.host_id;
             currentRoom = res.room;
-            currentUser = { name: hostName, avatar: selectedAvatar };
+            currentUser = { name: name, avatar: 'avatar1' };
 
-            updateHeaderUser(hostName, selectedAvatar);
+            connectWebSocket(res.room_code, myPlayerId);
+            showWaitingRoom(res.room);
+        } catch (err) {
+            alert('Failed to launch Solo game: ' + err.message);
+        } finally {
+            soloPlayBtn.disabled = false;
+            soloPlayBtn.textContent = '🤖 Play vs Bots';
+        }
+    });
+
+    // ---------------- 2. PLAY WITH FRIENDS (CUSTOM ROOM) ---------------- //
+    createFriendsRoomBtn.addEventListener('click', async () => {
+        const name = friendsPlayerName.value.trim() || 'Host';
+        try {
+            createFriendsRoomBtn.disabled = true;
+            createFriendsRoomBtn.textContent = 'Creating...';
+
+            const res = await window.API.createRoom(name, 'avatar1', 6);
+            myPlayerId = res.host_id;
+            currentRoom = res.room;
+            currentUser = { name: name, avatar: 'avatar1' };
+
             connectWebSocket(res.room_code, myPlayerId);
             showWaitingRoom(res.room);
         } catch (err) {
             alert('Failed to create room: ' + err.message);
         } finally {
-            createRoomBtn.disabled = false;
-            createRoomBtn.textContent = '🔥 Create Room';
+            createFriendsRoomBtn.disabled = false;
+            createFriendsRoomBtn.textContent = '👥 Create Room';
         }
     });
 
-    // ---------------- Join Room ---------------- //
-    joinRoomBtn.addEventListener('click', async () => {
-        const code = joinCodeInput.value.trim().toUpperCase();
-        const playerName = joinNameInput.value.trim();
-
+    joinFriendsRoomBtn.addEventListener('click', async () => {
+        const code = joinRoomCodeInput.value.trim().toUpperCase();
+        const name = friendsPlayerName.value.trim() || 'Player';
         if (!code || code.length < 4) {
-            alert('Please enter a valid 6-character room code.');
-            return;
-        }
-        if (!playerName) {
-            alert('Please enter your player name.');
+            alert('Please enter a valid room code.');
             return;
         }
 
         try {
-            joinRoomBtn.disabled = true;
-            joinRoomBtn.textContent = 'Joining...';
+            joinFriendsRoomBtn.disabled = true;
+            joinFriendsRoomBtn.textContent = 'Joining...';
 
-            const res = await window.API.joinRoom(code, playerName, selectedAvatar);
+            const res = await window.API.joinRoom(code, name, 'avatar2');
             myPlayerId = res.player_id;
             currentRoom = res.room;
-            currentUser = { name: playerName, avatar: selectedAvatar };
+            currentUser = { name: name, avatar: 'avatar2' };
 
-            updateHeaderUser(playerName, selectedAvatar);
             connectWebSocket(code, myPlayerId);
             showWaitingRoom(res.room);
         } catch (err) {
             alert('Failed to join room: ' + err.message);
         } finally {
-            joinRoomBtn.disabled = false;
-            joinRoomBtn.textContent = 'Join Room';
+            joinFriendsRoomBtn.disabled = false;
+            joinFriendsRoomBtn.textContent = 'Join Room';
         }
     });
 
-    // Copy room code button
-    copyRoomCodeBtn.addEventListener('click', () => {
-        if (currentRoom) {
-            navigator.clipboard.writeText(currentRoom.code);
-            copyRoomCodeBtn.textContent = '✅ Copied!';
-            setTimeout(() => { copyRoomCodeBtn.textContent = '📋 Copy Code'; }, 1500);
+    // ---------------- 3. QUICK MATCHMAKING ---------------- //
+    mmSearchBtn.addEventListener('click', async () => {
+        const name = mmPlayerName.value.trim() || 'Player';
+        mmSearchBtn.disabled = true;
+        mmSearchBtn.textContent = 'Searching...';
+
+        try {
+            const listRes = await window.API.listRooms();
+            const available = listRes.rooms && listRes.rooms.length > 0 ? listRes.rooms[0] : null;
+
+            if (available) {
+                const joinRes = await window.API.joinRoom(available.code, name, 'avatar3');
+                myPlayerId = joinRes.player_id;
+                currentRoom = joinRes.room;
+                connectWebSocket(available.code, myPlayerId);
+                showWaitingRoom(joinRes.room);
+            } else {
+                const createRes = await window.API.createRoom(name, 'avatar3', 4);
+                myPlayerId = createRes.host_id;
+                currentRoom = createRes.room;
+                connectWebSocket(createRes.room_code, myPlayerId);
+                showWaitingRoom(createRes.room);
+            }
+        } catch (err) {
+            alert('Matchmaking error: ' + err.message);
+        } finally {
+            mmSearchBtn.disabled = false;
+            mmSearchBtn.textContent = '⚡ Find Match';
         }
     });
 
-    // Toggle Ready button
-    toggleReadyBtn.addEventListener('click', () => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ready' }));
-        }
-    });
-
-    // Host Start Game button
-    startGameBtn.addEventListener('click', () => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'start_game' }));
-        }
-    });
-
-    // Return to Lobby button
-    returnLobbyBtn.addEventListener('click', () => {
-        victoryModal.classList.remove('active');
-        if (ws) ws.close();
-        currentRoom = null;
-        switchView('lobby');
-        refreshRoomsList();
-    });
-
-    function updateHeaderUser(name, avatar) {
-        userBadge.style.display = 'flex';
-        userNameDisplay.textContent = name;
-        userAvatarDisplay.textContent = getAvatarEmoji(avatar);
-    }
-
-    function getAvatarEmoji(avatarId) {
-        const avatars = {
-            'avatar1': '🦊', 'avatar2': '🐺', 'avatar3': '🦁',
-            'avatar4': '🐯', 'avatar5': '🐉', 'avatar6': '🤖'
-        };
-        return avatars[avatarId] || '👤';
-    }
-
-    // ---------------- Waiting Room UI ---------------- //
+    // ---------------- WAITING ROOM CONTROLS ---------------- //
     function showWaitingRoom(room) {
         currentRoom = room;
         waitingRoomCode.textContent = room.code;
-        renderWaitingSeats(room);
+        renderWaitingSlots(room);
         switchView('waiting');
     }
 
-    function renderWaitingSeats(room) {
-        waitingSeatsGrid.innerHTML = '';
+    function renderWaitingSlots(room) {
+        waitingSlotsGrid.innerHTML = '';
+        waitingPlayerCount.textContent = `${room.players.length}/${room.max_players}`;
         const isHost = (myPlayerId === room.host_id);
 
         for (let i = 0; i < room.max_players; i++) {
             const player = room.players[i];
-            const seat = document.createElement('div');
+            const slot = document.createElement('div');
 
             if (player) {
-                seat.className = `player-seat occupied ${player.is_ready ? 'is-ready' : ''}`;
-                seat.innerHTML = `
-                    <div class="seat-avatar">${getAvatarEmoji(player.avatar)}</div>
-                    <div class="seat-name">${escapeHtml(player.name)}</div>
-                    <span class="seat-tag ${player.is_host ? 'host' : (player.is_ready ? 'ready' : 'not-ready')}">
-                        ${player.is_host ? '👑 Host' : (player.is_ready ? '✅ Ready' : '⏳ Waiting')}
+                slot.className = `player-slot-card occupied ${player.is_ready ? 'is-ready' : ''}`;
+                slot.innerHTML = `
+                    <div class="slot-avatar">${player.is_ai ? '🤖' : getAvatarEmoji(player.avatar)}</div>
+                    <div class="slot-name">${escapeHtml(player.name)}</div>
+                    <span class="slot-badge ${player.is_host ? 'host' : (player.is_ai ? 'bot' : (player.is_ready ? 'ready' : 'waiting'))}">
+                        ${player.is_host ? '👑 Host' : (player.is_ai ? '🤖 AI Bot' : (player.is_ready ? '✅ Ready' : '⏳ Waiting'))}
                     </span>
                 `;
+
+                if (isHost && !player.is_host) {
+                    const kickBtn = document.createElement('button');
+                    kickBtn.style.position = 'absolute';
+                    kickBtn.style.top = '6px';
+                    kickBtn.style.right = '8px';
+                    kickBtn.style.background = 'none';
+                    kickBtn.style.border = 'none';
+                    kickBtn.style.color = '#ff1a4b';
+                    kickBtn.style.cursor = 'pointer';
+                    kickBtn.style.fontSize = '1rem';
+                    kickBtn.textContent = '✕';
+                    kickBtn.title = 'Remove';
+                    kickBtn.onclick = () => {
+                        if (player.is_ai) {
+                            ws.send(JSON.stringify({ type: 'removeAI', aiId: player.id }));
+                        } else {
+                            ws.send(JSON.stringify({ type: 'removePlayer', targetId: player.id }));
+                        }
+                    };
+                    slot.appendChild(kickBtn);
+                }
             } else {
-                seat.className = 'player-seat';
-                seat.innerHTML = `
-                    <div class="seat-avatar" style="opacity: 0.2">🪑</div>
-                    <div class="seat-name" style="color: #666">Empty Seat</div>
+                slot.className = 'player-slot-card';
+                slot.innerHTML = `
+                    <div class="slot-avatar" style="opacity: 0.2">🪑</div>
+                    <div class="slot-name" style="color: #555">Empty Seat</div>
                 `;
             }
-            waitingSeatsGrid.appendChild(seat);
+            waitingSlotsGrid.appendChild(slot);
         }
 
         // Host controls
         if (isHost) {
-            startGameBtn.style.display = 'flex';
+            startGameBtn.style.display = 'block';
+            addAiBtn.style.display = 'block';
+            removeAiBtn.style.display = 'block';
             toggleReadyBtn.style.display = 'none';
 
             const canStart = (room.players.length >= 2 && room.players.every(p => p.is_ready));
             startGameBtn.disabled = !canStart;
-            startGameBtn.title = canStart ? "Start Match" : "All players must be ready (min 2 players)";
         } else {
             startGameBtn.style.display = 'none';
-            toggleReadyBtn.style.display = 'flex';
+            addAiBtn.style.display = 'none';
+            removeAiBtn.style.display = 'none';
+            toggleReadyBtn.style.display = 'block';
 
             const me = room.players.find(p => p.id === myPlayerId);
             if (me) {
@@ -277,11 +298,47 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // ---------------- WebSocket Handler ---------------- //
-    function connectWebSocket(roomCode, playerId) {
-        if (ws) {
-            ws.close();
+    addAiBtn.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'addAI' }));
         }
+    };
+
+    removeAiBtn.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'removeAI' }));
+        }
+    };
+
+    toggleReadyBtn.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ready' }));
+        }
+    };
+
+    startGameBtn.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'startGame' }));
+        }
+    };
+
+    shareRoomBtn.onclick = () => {
+        if (currentRoom) {
+            navigator.clipboard.writeText(currentRoom.code);
+            shareRoomBtn.textContent = '✅ Copied!';
+            setTimeout(() => { shareRoomBtn.textContent = '📋 Share Code'; }, 1500);
+        }
+    };
+
+    leaveLobbyBtn.onclick = () => {
+        if (ws) ws.close();
+        currentRoom = null;
+        switchView('lobby');
+    };
+
+    // ---------------- WEBSOCKET CONNECTION ---------------- //
+    function connectWebSocket(roomCode, playerId) {
+        if (ws) ws.close();
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/${roomCode}/${playerId}`;
@@ -293,34 +350,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         gameRenderer.setWebSocket(ws, playerId);
 
-        ws.onopen = () => {
-            console.log('Connected to UNO No Mercy WebSocket');
-        };
-
         ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                handleWsMessage(data);
+                handleWsEvent(data);
             } catch (err) {
-                console.error('Error handling WS message:', err);
+                console.error('WS Error:', err);
             }
-        };
-
-        ws.onclose = () => {
-            console.log('WebSocket closed');
-        };
-
-        ws.onerror = (err) => {
-            console.error('WebSocket error:', err);
         };
     }
 
-    function handleWsMessage(data) {
+    function handleWsEvent(data) {
         switch (data.type) {
             case 'room_update':
                 currentRoom = data.room;
                 if (data.room.status === 'waiting') {
-                    renderWaitingSeats(data.room);
+                    renderWaitingSlots(data.room);
                 }
                 break;
 
@@ -336,11 +381,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'chat_message':
-                appendChatMessage(data.message);
+                appendChat(data.message);
+                if (data.emoji) {
+                    gameRenderer.spawnFloatingEmoji(data.emoji, data.sender_id);
+                }
                 break;
 
             case 'game_over':
-                showVictoryModal(data.winner, data.win_reason, data.duration_seconds);
+                showVictory(data.winner, data.win_reason);
                 break;
 
             case 'error':
@@ -349,7 +397,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function appendChatMessage(msg) {
+    function appendChat(msg) {
         const item = document.createElement('div');
         item.className = `chat-msg ${msg.is_system ? 'system' : ''}`;
         item.innerHTML = msg.is_system ?
@@ -359,41 +407,33 @@ document.addEventListener('DOMContentLoaded', () => {
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
     }
 
-    function showVictoryModal(winner, reason, duration) {
+    function showVictory(winner, reason) {
         window.sounds.victory();
         winnerNameEl.textContent = winner ? winner.name : 'Unknown';
-        winReasonEl.textContent = reason || 'Victory!';
+        winReasonEl.textContent = reason || 'Match Completed!';
         victoryModal.classList.add('active');
     }
 
-    async function refreshRoomsList() {
-        try {
-            const data = await window.API.listRooms();
-            activeRoomsList.innerHTML = '';
-            if (!data.rooms || data.rooms.length === 0) {
-                activeRoomsList.innerHTML = '<div class="room-list-empty">No active rooms found. Create one to play!</div>';
-                return;
-            }
-
-            data.rooms.forEach(room => {
-                const item = document.createElement('div');
-                item.className = 'room-item';
-                item.innerHTML = `
-                    <div>
-                        <strong>${escapeHtml(room.host_name)}'s Room</strong>
-                        <div style="font-size: 0.8rem; color: #888">Code: ${room.code} • ${room.player_count}/${room.max_players} Players</div>
-                    </div>
-                    <button class="btn-secondary" style="padding: 6px 14px">Join</button>
-                `;
-                item.querySelector('button').onclick = () => {
-                    joinCodeInput.value = room.code;
-                    joinNameInput.focus();
-                };
-                activeRoomsList.appendChild(item);
-            });
-        } catch (e) {
-            console.error('Failed to list rooms:', e);
+    rematchBtn.onclick = () => {
+        victoryModal.classList.remove('active');
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'rematch' }));
         }
+    };
+
+    returnLobbyBtn.onclick = () => {
+        victoryModal.classList.remove('active');
+        if (ws) ws.close();
+        currentRoom = null;
+        switchView('lobby');
+    };
+
+    function getAvatarEmoji(avatarId) {
+        const avatars = {
+            'avatar1': '🦊', 'avatar2': '🐺', 'avatar3': '🦁',
+            'avatar4': '🐯', 'avatar5': '🐉', 'avatar6': '🤖'
+        };
+        return avatars[avatarId] || '👤';
     }
 
     function escapeHtml(str) {
@@ -402,9 +442,4 @@ document.addEventListener('DOMContentLoaded', () => {
         div.textContent = str;
         return div.innerHTML;
     }
-
-    // Initial rooms fetch
-    refreshRoomsList();
-    setInterval(refreshRoomsList, 5000);
 });
-
